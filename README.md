@@ -19,6 +19,8 @@ The tool will automatically search for all applications which are registered on 
 
 The application searches the folder containing the executable as well as its subdirectories for SEB configuration files to use. If a config file was found and it's selected in the section below the applications, then SEB is started and opens that config. After starting SEB, the application will terminate itself.
 
+If the folder containing SEB Verificator is writable, then a subfolder 'Logs' is created, which contains log files.
+
 ## Building
 
 Open SafeExamBrowser.xcworkspace in a recent version of Xcode (currently 13.4.1) and switch to the SEBVerificator scheme to build it.
