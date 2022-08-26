@@ -36,6 +36,6 @@ Buttons:
 
 Open SafeExamBrowser.xcworkspace in a recent version of Xcode (currently 13.4.1) and switch to the SEBVerificator scheme to build it.
 
-Currently main reflects SEB for macOS/iOS 3.1. This is the first version using a unified macOS/iOS/iPadOS Xcode project (Xcode workspace with both macOS and iOS targets). In addition, the same Xcode project contains now a SEBVerificator target (as this stand-alone tool shares code with the SEB applications).
+Currently the main branch reflects SEB for macOS/iOS 3.1. This is the first version using a unified macOS/iOS/iPadOS Xcode project (Xcode workspace with both macOS and iOS targets). In addition, the same Xcode project contains now a SEBVerificator target (as this stand-alone tool shares code with the SEB applications).
 
 All information about Safe Exam Browser you'll find at http://safeexambrowser.org, especially see https://safeexambrowser.org/developer/overview.html. Other documentation is available in the according repositories. Search discussions boards if you don't find  information in the manual and SEB How To document (see links on page Support).
