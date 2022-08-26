@@ -20,7 +20,7 @@ The tool will automatically search for all applications which are registered on 
 * If you find several versions of SEB and don't want to delete or archive other versions, make sure the one you intend to use regularly for exams is registered as the default app to open both .seb files and seb(s):// hyperlinks.
 * If SEB Verificator displays other applications (which can open .seb files and seb(s):// hyperlinks), even if they have a different app name and/or Bundle ID, those could be manipulated SEB versions or other apps intended to be used for cheating. We suggest to archive those to a .zip file and submit it to us, so we can analyze it.
 
-The application searches the folder containing the executable as well as its subdirectories for SEB configuration files to use. If a config file was found and it's selected in the section below the applications, then SEB is started and opens that config. After starting SEB, the application will terminate itself.
+The SEB Verificator application searches the folder it is started from as well as its subdirectories for SEB configuration files to use. If a config file was found and it's selected in the section below the list of SEB applications, then SEB is started and opens that config. After starting SEB, the SEB Verificator application will terminate itself.
 
 If the folder containing SEB Verificator is writable, then a subfolder 'Logs' is created, which contains log files. The log files list device type and name, operating system version, computer account user name, local network host name in the beginning of each session information, so you could later trace which computers you checked and which had some unwanted SEB versions installed.
 
