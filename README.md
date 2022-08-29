@@ -1,10 +1,10 @@
 # seb-mac-verificator
 SEB Verificator for macOS
 
-A standalone tool to manually verify the integrity of a Safe Exam Browser installation on macOS. This application is intended for use cases like BYOD exams on location, where candidates have complete control over their
+A stand-alone tool to manually verify the integrity of a Safe Exam Browser installation on macOS. This application is intended for use cases like BYOD exams on location, where candidates have complete control over their
 systems and therefore could be trying to use a manipulated build of Safe Exam Browser to perform an exam.
 
-You may use the SEB Verificator on a USB stick drive and start it from there on the exam device under your supervision. Alternatively, you could make the tool downloadable on a website in your control and ask
+Exam proctors/invigilators may use SEB Verificator on a USB stick drive and start it from there on the exam device under their supervision. Alternatively, you could make the tool downloadable on a website in your control and ask
 the candidate to download and execute the SEB Verificator under your supervision.
 
 ## Requirements
