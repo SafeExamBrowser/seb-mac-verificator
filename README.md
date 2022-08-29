@@ -32,6 +32,16 @@ Buttons:
 * Quit Apps & Start SEB: SEB Verificator will attempt to send a quit command to all applications currently running which use the activation policy 'regular', e.g. they have an icon in the macOS Dock and can be activated using the App Chooser (command - tab shortcut). If an app has an open document with unsaved changes and doesn't support auto save, it might ask you to first save the document before quitting. Apps like Google Chrome, which don't comply to Apple's Human Interface Guidelines might ask you to confirm quitting. After all apps are quit, the selected SEB version will be started (opening a selected SEB configuration file). You can also force quit applications in the window which SEB Verificator will display, but then you might loose unsaved changes. Note: This feature currently doesn't terminate background processes and helper apps, which aren't displayed in the Dock/App Chooser. After quitting SEB, you need to start apps which were quit by SEB Verificator manually, including the Finder (use for example the Dock or Spotlight). 
 
 
+## Using Safe Mode for More Security
+
+When an exam proctor/invigilator supervises the correct use of SEB Verificator to start SEB, there is another way how to increase security massively: [Reboot the Mac in safe mode](https://support.apple.com/guide/mac-help/start-up-your-mac-in-safe-mode-mh21245/mac). A macOS device owned and controlled by the candidate could have specific third-party tools installed, which run in the background and could potentially be used for cheating. Also a candidate might attempt to run SEB Verificator and SEB in a manipulated virtual machine (VM), attempting to bypass SEB's VM detector. Safe mode should prevent this if activated while being supervised by a proctor:
+* Shut the Mac down.
+* Start the mac in safe mode, see [Apple instructions how to do this on a Mac with Apple silicon or an Intel-based Mac](https://support.apple.com/guide/mac-help/start-up-your-mac-in-safe-mode-mh21245/mac).
+* In safe mode, macOS prevents some software, such as startup items, from loading. This also applies to VMs and software starting third-party background processes.
+* Start SEB using SEB Verificator. You could use SEB Server to monitor if a Mac would be rebooted during the exam.
+* After the exam, reboot the Mac, safe mode will be deactivated.
+ 
+
 ## Building
 
 Open SafeExamBrowser.xcworkspace in a recent version of Xcode (currently 13.4.1) and switch to the SEBVerificator scheme to build it.
