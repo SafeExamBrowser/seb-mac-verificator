@@ -55,7 +55,7 @@ import PDFKit
     private var previousSearchText = ""
 
     private var downloadFilename: String?
-
+    private var forceDownload = false
     public var downloadingSEBConfig = false
     
     public var wkWebViewConfiguration: WKWebViewConfiguration {
@@ -84,12 +84,14 @@ import PDFKit
         
         let jsDocumentEndCode = """
     var elements = document.body.querySelectorAll('a[href]:not([disabled]), button:not([disabled]), textarea:not([disabled]), input[type="text"]:not([disabled]), input[type="radio"]:not([disabled]), input[type="checkbox"]:not([disabled]), select:not([disabled]), details:not([disabled]), summary:not([disabled])');
-    elements[0].addEventListener('blur', (event) => {
-        window.webkit.messageHandlers.firstElementBlured.postMessage(event.target.outerHTML);
-      }, true);
-    elements[elements.length - 1].addEventListener('blur', (event) => {
-        window.webkit.messageHandlers.lastElementBlured.postMessage(event.target.outerHTML);
-      }, true);
+    if (elements[0]) {
+        elements[0].addEventListener('blur', (event) => {
+            window.webkit.messageHandlers.firstElementBlured.postMessage(event.target.outerHTML);
+        }, true);
+        elements[elements.length - 1].addEventListener('blur', (event) => {
+            window.webkit.messageHandlers.lastElementBlured.postMessage(event.target.outerHTML);
+        }, true);
+    }
 """
         let jsDocumentEndScript = WKUserScript(source: jsDocumentEndCode, injectionTime: WKUserScriptInjectionTime.atDocumentEnd, forMainFrameOnly: false)
         userContentController.addUserScript(jsDocumentEndScript)
@@ -162,22 +164,25 @@ import PDFKit
 
     private var firstLoad = true
 
-    @objc public init(delegate: SEBAbstractWebViewNavigationDelegate) {
+    @objc public init(delegate: SEBAbstractWebViewNavigationDelegate, configuration: WKWebViewConfiguration?) {
         super.init()
         navigationDelegate = delegate
-        #if os(iOS)
-        let sebWKWebViewController = SEBiOSWKWebViewController(delegate: self)
-        self.browserControllerDelegate = sebWKWebViewController
-        #elseif os(macOS)
-        let sebWKWebViewController = SEBOSXWKWebViewController(delegate: self)
-        self.browserControllerDelegate = sebWKWebViewController
-        #endif
-        
+        initWKWebViewController(configuration: configuration)
         let developerExtrasEnabled = UserDefaults.standard.secureBool(forKey: "org_safeexambrowser_SEB_allowDeveloperConsole")
         sebWebView.setValue(developerExtrasEnabled, forKey: "allowsRemoteInspection")
         
         pageZoom = defaultPageZoom
         textZoom = defaultTextZoom
+    }
+    
+    public func initWKWebViewController(configuration: WKWebViewConfiguration?) {
+#if os(iOS)
+        let sebWKWebViewController = SEBiOSWKWebViewController(delegate: self, configuration: configuration)
+        self.browserControllerDelegate = sebWKWebViewController
+#elseif os(macOS)
+        let sebWKWebViewController = SEBOSXWKWebViewController(delegate: self, configuration: configuration)
+        self.browserControllerDelegate = sebWKWebViewController
+#endif
     }
     
     public func loadView() {
@@ -244,27 +249,25 @@ import PDFKit
             }
             return
         } else {
-            if #available(macOS 11.3, iOS 14.5, *) {
-                sebWebView.evaluateJavaScript(stopMediaScript, completionHandler: { (response, error) in
-                    if let _ = error {
-                        print(error as Any)
-                    }
+            sebWebView.evaluateJavaScript(stopMediaScript, completionHandler: { (response, error) in
+                if let _ = error {
+                    print(error as Any)
+                }
+                if #available(macOS 11.3, iOS 14.5, *) {
                     self.sebWebView.closeAllMediaPresentations()
-                    completionHandler()
-                })
-                return
-            }
+                }
+                completionHandler()
+            })
+            return
         }
-        sebWebView.evaluateJavaScript(stopMediaScript, completionHandler: { (response, error) in
-            if let _ = error {
-                print(error as Any)
-            }
-            completionHandler()
-        })
     }
     
     public func nativeWebView() -> Any {
         return browserControllerDelegate?.nativeWebView!() as Any
+    }
+    
+    public func closeWKWebView() {
+        browserControllerDelegate?.closeWKWebView?()
     }
     
     public func url() -> URL? {
@@ -620,8 +623,8 @@ import PDFKit
         navigationDelegate?.setCanGoBack?(canGoBack, canGoForward: canGoForward)
     }
     
-    public func openNewTab(with url: URL) -> SEBAbstractWebView {
-        return (navigationDelegate?.openNewTab?(with: url))!
+    public func openNewTab(with url: URL?, configuration: WKWebViewConfiguration?) -> SEBAbstractWebView {
+        return (navigationDelegate?.openNewTab?(with: url, configuration: configuration))!
     }
 
     public func examine(_ cookies: [HTTPCookie], url: URL) {
@@ -630,6 +633,10 @@ import PDFKit
     
     public func isNavigationAllowed() -> Bool {
         return navigationDelegate?.isNavigationAllowed ?? false
+    }
+    
+    public var isAACEnabled: Bool {
+        return navigationDelegate?.isAACEnabled ?? false
     }
     
     public func sebWebViewDidStartLoad() {
@@ -714,7 +721,7 @@ import PDFKit
     public func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         var newTab = false
         if navigationAction.targetFrame == nil {
-            newTab = true;
+            newTab = true
         }
         var navigationActionPolicy = SEBNavigationActionPolicyCancel
 
@@ -726,7 +733,6 @@ import PDFKit
         let allowDownloads = self.navigationDelegate?.allowDownUploads ?? false
         
         let callDecisionHandler:() -> () = {
-            DDLogDebug("navigationActionPolicy: \(navigationActionPolicy)")
             if navigationActionPolicy == SEBNavigationActionPolicyAllow {
                 decisionHandler(.allow)
             } else if navigationActionPolicy == SEBNavigationActionPolicyCancel {
@@ -734,6 +740,8 @@ import PDFKit
             } else if navigationActionPolicy == SEBNavigationActionPolicyDownload {
                 // This case should not happen in the current implementation
                 decisionHandler(.cancel)
+            } else if navigationActionPolicy == SEBNavigationActionPolicyJSOpen {
+                decisionHandler(.allow)
             }
         }
 
@@ -752,11 +760,13 @@ import PDFKit
                     newTab = true
                 }
             }
-            navigationActionPolicy = (self.navigationDelegate?.decidePolicy?(for: navigationAction, newTab: newTab)) ?? SEBNavigationActionPolicyCancel
+            let newNavigationPolicy = self.navigationDelegate?.decidePolicy?(for: navigationAction, newTab: newTab, configuration:nil)
+            navigationActionPolicy = newNavigationPolicy?.policy ?? SEBNavigationActionPolicyCancel
 
             if navigationActionPolicy != SEBNavigationActionPolicyCancel {
                 if allowDownloads && self.downloadFilename != nil && !(self.downloadFilename ?? "").isEmpty {
                     DDLogInfo("Link to resource '\(String(describing: self.downloadFilename))' had the 'download' attribute, it will be downloaded instead of displayed.")
+                    self.forceDownload = false
                     if #available(macOS 10.13, iOS 11.0, *) {
                         let httpCookieStore = webView.configuration.websiteDataStore.httpCookieStore
                         httpCookieStore.getAllCookies{ cookies in
@@ -772,13 +782,25 @@ import PDFKit
                         return
                     }
                 }
+            } else {
+                DDLogDebug("Navigation action policy for URL \(url) was 'cancel'")
             }
             callDecisionHandler()
         }
 
+        
         if !url.hasDirectoryPath && (allowDownloads || (url.pathExtension.caseInsensitiveCompare(filenameExtensionPDF) == .orderedSame && (self.downloadFilename ?? "").isEmpty)) {
-            webView.evaluateJavaScript("document.querySelector('[href=\"" + url.absoluteString + "\"]').download") {(result, error) in
-                self.downloadFilename = result as? String
+            webView.evaluateJavaScript("document.querySelector('[href=\"" + url.absoluteString + "\"]')?.download") {(result, error) in
+                if error == nil {
+                    self.downloadFilename = result as? String
+                    DDLogDebug("'download' attribute found with filename '\(String(describing: self.downloadFilename))'")
+                    if self.downloadFilename != nil {
+                        self.forceDownload = true
+                    }
+                } else {
+                    DDLogDebug("Attempting to get 'download' attribute from DOM failed with error '\(String(describing: error))'")
+                    self.downloadFilename = nil
+                }
                 proceedHandler()
             }
         } else {
@@ -790,8 +812,6 @@ import PDFKit
     public func webView(_ webView: WKWebView,
                         decidePolicyFor navigationResponse: WKNavigationResponse,
                         decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
-        
-        DDLogDebug("decidePolicyFor navigationResponse")
         
         let decidePolicyWithCookies:([HTTPCookie]) -> () = { cookies in
             guard let url = navigationResponse.response.url else {
@@ -826,7 +846,8 @@ import PDFKit
                 }
                 let isPDF = (filename as NSString).pathExtension.caseInsensitiveCompare(filenameExtensionPDF) == .orderedSame
                 let downloadPDFFiles = self.navigationDelegate?.downloadPDFFiles
-                if !isPDF || isPDF && downloadPDFFiles == true {
+                if !isPDF || isPDF && downloadPDFFiles == true || isPDF && self.forceDownload {
+                    self.forceDownload = false
                     DDLogInfo("Link to resource '\(filename)' had the 'download' attribute or the header 'Content-Disposition': 'attachment; filename=...', it will be downloaded instead of displayed.")
                     decisionHandler(.cancel)
                     self.navigationDelegate?.downloadFile?(from: url, filename: filename, cookies: cookies)
@@ -835,8 +856,6 @@ import PDFKit
 
                 }
                 DDLogDebug("Filename '\(filename)' of resource to download determined using the 'download' attribute or the header 'Content-Disposition': 'attachment; filename=...'. Property suggestedFilename from WKNavigationResponse: '\(suggestedFilename ?? "<empty>")'")
-            } else {
-                DDLogDebug("downloadFilename: \(String(describing: self.downloadFilename)), downloadingSEBConfig: \(self.downloadingSEBConfig)")
             }
             
             if navigationResponsePolicy == SEBNavigationResponsePolicyAllow {
@@ -867,6 +886,7 @@ import PDFKit
                         if innerComponents.count > 1 {
                             if innerComponents[0].lowercased().contains("filename") {
                                 let filename = innerComponents[1]
+                                forceDownload = true
                                 return filename.replacingOccurrences(of: "\"", with: "")
                             }
                         }
@@ -881,8 +901,13 @@ import PDFKit
         navigationDelegate?.sebWebViewDidFailLoadWithError?(error)
     }
     
-    public func decidePolicyForNavigationAction(with navigationAction: WKNavigationAction, newTab: Bool) -> SEBNavigationActionPolicy {
-        return (navigationDelegate?.decidePolicy?(for: navigationAction, newTab: newTab)) ?? SEBNavigationActionPolicyCancel
+    public func decidePolicyForNavigationAction(with navigationAction: WKNavigationAction, newTab: Bool, newWebView: AutoreleasingUnsafeMutablePointer<SEBAbstractWebView?>?) -> SEBNavigationAction {
+        guard let newNavigationAction = navigationDelegate?.decidePolicy?(for: navigationAction, newTab: newTab, configuration:nil) else {
+            let newNavigationAction = SEBNavigationAction()
+            newNavigationAction.policy = SEBNavigationActionPolicyCancel
+            return newNavigationAction
+        }
+        return newNavigationAction
     }
     
     public func sebWebViewDidUpdateTitle(_ title: String?) {
@@ -895,7 +920,22 @@ import PDFKit
     
     public func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
         if navigationAction.targetFrame == nil {
-            _ = navigationDelegate?.decidePolicy?(for: navigationAction, newTab: true)
+            let sebWKNavigationAction = SEBWKNavigationAction()
+            sebWKNavigationAction.writableNavigationType = navigationAction.navigationType
+            let request = navigationAction.request
+            sebWKNavigationAction.writableRequest = request
+            let newNavigationAction = navigationDelegate?.decidePolicy?(for: sebWKNavigationAction, newTab: true, configuration:configuration)
+            let openedAbstractWebView = newNavigationAction?.openedWebView
+#if os(macOS)
+            if newNavigationAction?.policy == SEBNavigationActionPolicyJSOpen {
+                if openedAbstractWebView != nil { // Excluding special case: Open in same window
+                    DDLogInfo("Opened modern WebView after Javascript .open()")
+                    let newAbstractWebView = openedAbstractWebView!
+                    let newWKWebView = newAbstractWebView.nativeWebView() as? WKWebView
+                    return newWKWebView
+                }
+            }
+#endif
         }
         return nil
     }

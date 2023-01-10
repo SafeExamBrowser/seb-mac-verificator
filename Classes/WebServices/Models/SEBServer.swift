@@ -38,6 +38,8 @@ public struct keys {
     static let headerAuthorization = "Authorization"
     static let headerContentType = "Content-Type"
     static let contentTypeFormURLEncoded = "application/x-www-form-urlencoded"
+    static let headerAccept = "Accept"
+    static let acceptJSON = "application/json, */*"
     static let contentTypeJSON = "application/json;charset=UTF-8"
     static let institutionId = "institutionId"
     static let sebConnectionToken = "SEBConnectionToken"
@@ -65,6 +67,19 @@ public struct keys {
     static let notificationConfirmed = "NOTIFICATION_CONFIRMED"
 }
 
+public struct statusCodes {
+    static let ok = 200
+    static let notSuccessfullRange = 300
+    static let badRequest = 400
+    static let unauthorized = 401
+    static let internalServerError = 500   
+}
+
+public struct errors {
+    static let invalidToken = "invalid_token"
+    static let generic = "Generic error message"
+}
+
 public struct Discovery: Codable {
     let title: String
     let description: String
@@ -79,10 +94,12 @@ public struct Discovery: Codable {
     }
 }
 
+
 public struct API_Version: Codable {
     let name: String
     let endpoints: [Endpoint]
 }
+
 
 public struct Endpoint: Codable {
     let name: String
@@ -90,6 +107,7 @@ public struct Endpoint: Codable {
     let location: String
     let authorization: String
 }
+
 
 public struct SEB_Endpoint {
     var name: String
@@ -101,6 +119,7 @@ public struct SEB_Endpoint {
     }
 }
 
+
 public struct SEB_Endpoints {
     var accessToken = SEB_Endpoint("access-token-endpoint", nil)
     var handshake = SEB_Endpoint("seb-handshake-endpoint", nil)
@@ -108,6 +127,21 @@ public struct SEB_Endpoints {
     var ping = SEB_Endpoint("seb-ping-endpoint", nil)
     var log = SEB_Endpoint("seb-log-endpoint", nil)
 }
+
+
+public struct ErrorResponse: Codable {
+    let error: String?
+    let error_description: String?
+}
+
+
+public struct ServerErrorResponse: Codable {
+    let messageCode: String?
+    let systemMessage: String?
+    let details: String?
+    let attributes: Array<String?>?
+}
+
 
 public struct AccessToken: Codable {
     let access_token: String
@@ -122,7 +156,7 @@ public struct Exam: Codable {
     let examId: String
     let name: String
     let url: String
-    let lmsType: String
+    let lmsType: String?
 }
 
 
@@ -136,7 +170,7 @@ public struct Exam: Codable {
     @objc public func examId() -> String { return exam.examId }
     @objc public func name() -> String { return exam.name }
     @objc public func url() -> String { return exam.url }
-    @objc public func lmsType() -> String { return exam.lmsType }
+    @objc public func lmsType() -> String? { return exam.lmsType }
 }
 
 
@@ -164,6 +198,7 @@ public struct AutologinKey: Codable {
     let autologinurl: String
     let warnings: [String]
 }
+
 
 public struct Course: Codable {
     let id: Int

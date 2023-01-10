@@ -1,5 +1,5 @@
 //
-//  MoodleController.swift
+//  SEBServerController.swift
 //  SafeExamBrowser
 //
 //  Created by Daniel R. Schneider on 15.10.18.
@@ -35,26 +35,57 @@
 import Foundation
 
 @objc public protocol SEBServerControllerDelegate: AnyObject {
+    func didEstablishSEBServerConnection()
     func didSelectExam(_ examId: String, url: String)
+    func closeServerView(completion: @escaping () -> ())
     func startBatteryMonitoring(delegate: Any)
     func loginToExam(_ url: String)
     func didReceiveMoodleUserId(_ moodleUserId: String)
     func reconfigureWithServerExamConfig(_ configData: Data)
-    func didEstablishSEBServerConnection()
     func executeSEBInstruction(_ sebInstruction: SEBInstruction)
     func didCloseSEBServerConnectionRestart(_ restart: Bool)
+    func didFail(error: NSError, fatal: Bool)
 }
 
 @objc public protocol ServerControllerUIDelegate: AnyObject {
     
     func updateExamList()
+    func updateStatus(string: String?, append: Bool)
+}
+
+public class PendingServerRequest : NSObject {
+    public var pendingRequest: AnyObject?
+    
+    public init(request: AnyObject) {
+        pendingRequest = request
+    }
 }
 
 @objc public class SEBServerController : NSObject, SEBBatteryControllerDelegate {
     
-    fileprivate var pendingRequests: [AnyObject]? = []
+    fileprivate var session: URLSession
+    private let pendingRequestsQueue = dispatch_queue_concurrent_t.init(label: UUID().uuidString)
+
+    private var _pendingRequests: [PendingServerRequest] = []
+    public var pendingRequests: [PendingServerRequest] {
+        get {
+            var result: [PendingServerRequest] = []
+            pendingRequestsQueue.sync() {
+                result = self._pendingRequests
+            }
+            return result
+        }
+
+        set {
+            pendingRequestsQueue.async(group: nil, qos: .default, flags: .barrier) {
+                self._pendingRequests = newValue
+            }
+        }
+    }
+    
     fileprivate var serverAPI: SEB_Endpoints?
     fileprivate var accessToken: String?
+    fileprivate var gettingAccessToken = false
     fileprivate var connectionToken: String?
     fileprivate var exams: [Exam]?
     fileprivate var selectedExamId = ""
@@ -79,7 +110,46 @@ import Foundation
     @objc public var examList: [ExamObject]?
     private var pingTimer: Timer?
     @objc public var pingInstruction: String?
+    private var logSendigDispatchQueue = DispatchQueue(label: "org.safeexambrowser.SEB.LogSending", qos: .background)
+    private var logQueue: Queue<LogEvent> = Queue()
+    private var sendingLogEvent = false
+    private var maxRequestAttemps: Int
+    private var fallbackAttemptInterval: Double
+    private var fallbackTimeout: Double
+    private var cancelAllRequests = false
 
+    struct Queue<T> {
+         var list = [T]()
+        
+        mutating func enqueue(_ element: T) {
+              list.append(element)
+        }
+        mutating func dequeue() -> T? {
+             if !list.isEmpty {
+               return list.removeFirst()
+             } else {
+               return nil
+             }
+        }
+        var isEmpty: Bool {
+             return list.isEmpty
+        }
+    }
+
+    struct LogEvent {
+        var logLevel: String
+        var timestamp: String
+        var numericValue: Double
+        var message: String
+        
+        init(logLevel: String, timestamp: String, numericValue: Double, message: String) {
+            self.logLevel = logLevel
+            self.timestamp = timestamp
+            self.numericValue = numericValue
+            self.message = message
+        }
+    }
+    
     @objc public init(baseURL: URL, institution:  String, exam: String?, username: String, password: String, discoveryEndpoint: String, pingInterval: Double, delegate: SEBServerControllerDelegate) {
         self.baseURL = baseURL
         self.institution = institution
@@ -89,6 +159,12 @@ import Foundation
         self.discoveryEndpoint = discoveryEndpoint
         self.pingInterval = pingInterval
         self.delegate = delegate
+        self.maxRequestAttemps = UserDefaults.standard.secureInteger(forKey: "org_safeexambrowser_SEB_sebServerFallbackAttempts")
+        self.fallbackAttemptInterval = UserDefaults.standard.secureDouble(forKey: "org_safeexambrowser_SEB_sebServerFallbackAttemptInterval") / 1000
+        self.fallbackTimeout = UserDefaults.standard.secureDouble(forKey: "org_safeexambrowser_SEB_sebServerFallbackTimeout") / 1000
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForResource = fallbackTimeout
+        self.session = URLSession(configuration: configuration, delegate: nil, delegateQueue: OperationQueue.main)
     }
 }
 
@@ -100,94 +176,178 @@ extension Array where Element == Endpoint {
 
 public extension SEBServerController {
 
-    @objc func getServerAPI() {
+    fileprivate func load<Resource: ApiResource>(_ resource: Resource, httpMethod: String, body: String, headers: [AnyHashable: Any]?, withCompletion resourceLoadCompletion: @escaping (Resource.Model?, Int?, ErrorResponse?, [AnyHashable: Any]?, Int) -> Void) {
+        if !cancelAllRequests {
+            let request = ApiRequest(resource: resource)
+            let pendingRequest = PendingServerRequest(request: request)
+            pendingRequests.append(pendingRequest)
+            request.load(httpMethod: httpMethod, body: body, headers: headers, session: self.session, attempt: 0, completion: { [self] (response, statusCode, errorResponse, responseHeaders, attempt) in
+                self.pendingRequests = self.pendingRequests.filter { $0 != pendingRequest }
+                if statusCode == statusCodes.unauthorized && errorResponse?.error == errors.invalidToken {
+                    // Error: Unauthorized and token expired, get new token if not yet exceeded configured max attempts
+                    if attempt <= self.maxRequestAttemps && !cancelAllRequests {
+                        DispatchQueue.main.asyncAfter(deadline: (.now() + fallbackAttemptInterval)) {
+                            self.getServerAccessToken {
+                                // and try to perform the request again
+                                request.load(httpMethod: httpMethod, body: body, headers: headers, session: self.session, attempt: attempt, completion: resourceLoadCompletion)
+                            }
+                        }
+                    } else {
+                        let userInfo = [NSLocalizedDescriptionKey : NSLocalizedString("Repeating Error: Invalid Token", comment: ""),
+                            NSLocalizedRecoverySuggestionErrorKey : NSLocalizedString("Contact your server administrator", comment: ""),
+                                       NSDebugDescriptionErrorKey : "Server reported Invalid Token for maxRequestAttempts"]
+                        let error = NSError(domain: sebErrorDomain, code: Int(SEBErrorGettingConnectionTokenFailed), userInfo: userInfo)
+                        self.didFail(error: error, fatal: true)
+                    }
+                    return
+                }
+                if !cancelAllRequests {
+                    resourceLoadCompletion(response, statusCode, errorResponse, responseHeaders, attempt)
+                }
+            })
+        }
+    }
 
+    fileprivate func loadWithFallback<Resource: ApiResource>(_ resource: Resource, httpMethod: String, body: String, headers: [AnyHashable: Any]?, fallbackAttempt: Int, withCompletion resourceLoadCompletion: @escaping (Resource.Model?, Int?, ErrorResponse?, [AnyHashable: Any]?, Int) -> Void) {
+        if !cancelAllRequests {
+            load(resource, httpMethod: httpMethod, body: body, headers: headers, withCompletion: { (response, statusCode, errorResponse, responseHeaders, attempt) in
+                if statusCode == nil || statusCode ?? 0 >= statusCodes.notSuccessfullRange {
+                    DDLogError("Loading resource \(resource) not successful, status code: \(String(describing: statusCode)))")
+                    // Error: Try to load the resource again if maxRequestAttemps weren't reached yet
+                    let currentAttempt = fallbackAttempt+1
+                    if currentAttempt <= self.maxRequestAttemps {
+                        self.serverControllerUIDelegate?.updateStatus(string: NSLocalizedString("Failed, retrying...", comment: ""), append: true)
+                        DispatchQueue.main.asyncAfter(deadline: (.now() + self.fallbackAttemptInterval)) {
+                            // and try to perform the request again
+                            self.loadWithFallback(resource, httpMethod: httpMethod, body: body, headers: headers, fallbackAttempt: currentAttempt, withCompletion: resourceLoadCompletion)
+                            return
+                        }
+                        return
+                    } //if maxRequestAttemps reached, report failure to load resource
+                    self.serverControllerUIDelegate?.updateStatus(string: NSLocalizedString("Failed", comment: ""), append: false)
+                }
+                if !self.cancelAllRequests {
+                    resourceLoadCompletion(response, statusCode, errorResponse, responseHeaders, fallbackAttempt)
+                }
+            })
+        }
+    }
+
+    @objc func getServerAPI() {
         let discoveryResource = DiscoveryResource(baseURL: self.baseURL, discoveryEndpoint: self.discoveryEndpoint)
 
         let discoveryRequest = ApiRequest(resource: discoveryResource)
-        pendingRequests?.append(discoveryRequest)
+        pendingRequests.append(PendingServerRequest(request: discoveryRequest))
         // ToDo: Implement timeout and sebServerFallback
-        discoveryRequest.load { (discoveryResponse) in
-            // ToDo: This guard check doesn't work, userToken seems to be a double optional?
-            guard let discovery = discoveryResponse else {
-                return
-            }
-            guard let serverAPIEndpoints = discovery?.api_versions[0].endpoints else {
-                return
-            }
-            var sebEndpoints = SEB_Endpoints()
-                        
-            sebEndpoints.accessToken.endpoint = serverAPIEndpoints.endpoint(name: sebEndpoints.accessToken.name)
-            sebEndpoints.handshake.endpoint = serverAPIEndpoints.endpoint(name: sebEndpoints.handshake.name)
-            sebEndpoints.configuration.endpoint = serverAPIEndpoints.endpoint(name: sebEndpoints.configuration.name)
-            sebEndpoints.ping.endpoint = serverAPIEndpoints.endpoint(name: sebEndpoints.ping.name)
-            sebEndpoints.log.endpoint = serverAPIEndpoints.endpoint(name: sebEndpoints.log.name)
+        discoveryRequest.load(self.session) { (discoveryResponse) in
+            // ToDo: Does this if let check work, response seems to be a double optional?
+            if let discovery = discoveryResponse, let serverAPIEndpoints = discovery?.api_versions[0].endpoints {
+                var sebEndpoints = SEB_Endpoints()
+                            
+                sebEndpoints.accessToken.endpoint = serverAPIEndpoints.endpoint(name: sebEndpoints.accessToken.name)
+                sebEndpoints.handshake.endpoint = serverAPIEndpoints.endpoint(name: sebEndpoints.handshake.name)
+                sebEndpoints.configuration.endpoint = serverAPIEndpoints.endpoint(name: sebEndpoints.configuration.name)
+                sebEndpoints.ping.endpoint = serverAPIEndpoints.endpoint(name: sebEndpoints.ping.name)
+                sebEndpoints.log.endpoint = serverAPIEndpoints.endpoint(name: sebEndpoints.log.name)
 
-            self.serverAPI = sebEndpoints
-            
-            self.getAccessToken()
+                self.serverAPI = sebEndpoints
+                
+                self.getAccessToken()
+            } else {
+                let userInfo = [NSLocalizedDescriptionKey : NSLocalizedString("Cannot Get Server API", comment: ""),
+                    NSLocalizedRecoverySuggestionErrorKey : NSLocalizedString("Contact your server administrator", comment: ""),
+                               NSDebugDescriptionErrorKey : "Server didn't return \(discoveryResponse == nil ? "discovery response" : "API endpoints")."]
+                let error = NSError(domain: sebErrorDomain, code: Int(SEBErrorGettingConnectionTokenFailed), userInfo: userInfo)
+                self.didFail(error: error, fatal: true)
+            }
         }
     }
     
     func getAccessToken() {
-        let accessTokenResource = AccessTokenResource(baseURL: self.baseURL, endpoint: (serverAPI?.accessToken.endpoint?.location)!)
-        
-        let accessTokenRequest = ApiRequest(resource: accessTokenResource)
-        pendingRequests?.append(accessTokenRequest)
-        // ToDo: Implement timeout and sebServerFallback -> on a higher level
-        let authorizationString = (serverAPI?.accessToken.endpoint?.authorization ?? "") + " " + (username + ":" + password).data(using: .utf8)!.base64EncodedString()
-        let requestHeaders = [keys.headerContentType : keys.contentTypeFormURLEncoded,
-                              keys.headerAuthorization : authorizationString]
-        
-        accessTokenRequest.load(httpMethod: accessTokenResource.httpMethod, body:accessTokenResource.body, headers: requestHeaders, completion: { (accessTokenResponse, statusCode, responseHeaders) in
-            guard let accessToken = accessTokenResponse else {
-                return
-            }
-            guard let tokenString = accessToken?.access_token else {
-                return
-            }
-            self.accessToken = tokenString
-            // self.delegate?.didGetUserToken()
-
+        getServerAccessToken {
             self.getExamList()
-        })
+        }
     }
     
+    fileprivate func getServerAccessToken(completionHandler: @escaping () -> Void) {
+        if !gettingAccessToken {
+            gettingAccessToken = true
+            let accessTokenResource = AccessTokenResource(baseURL: self.baseURL, endpoint: (serverAPI?.accessToken.endpoint?.location)!)
+            
+            let authorizationString = (serverAPI?.accessToken.endpoint?.authorization ?? "") + " " + (username + ":" + password).data(using: .utf8)!.base64EncodedString()
+            let requestHeaders = [keys.headerContentType : keys.contentTypeFormURLEncoded,
+                                  keys.headerAuthorization : authorizationString]
+            
+            load(accessTokenResource, httpMethod: accessTokenResource.httpMethod, body: accessTokenResource.body, headers: requestHeaders, withCompletion: { (accessTokenResponse, statusCode, errorResponse, responseHeaders, attempt) in
+                self.gettingAccessToken = false
+                if let accessToken = accessTokenResponse, let tokenString = accessToken?.access_token {
+                    self.accessToken = tokenString
+                } else {
+                    self.serverControllerUIDelegate?.updateStatus(string: NSLocalizedString("Failed", comment: ""), append: false)
+                    let userInfo = [NSLocalizedDescriptionKey : NSLocalizedString("Cannot access server because of error: ", comment: "") + (errorResponse?.error ?? "unspecified"),
+                        NSLocalizedRecoverySuggestionErrorKey : NSLocalizedString("Contact your exam administrator", comment: ""),
+                                   NSDebugDescriptionErrorKey : "Server didn't return \(accessTokenResponse == nil ? "access token response" : "access token") because of error \(errorResponse?.error ?? "Unspecified"), details: \(errorResponse?.error_description ?? "n/a")."]
+                    let error = NSError(domain: sebErrorDomain, code: Int(SEBErrorGettingConnectionTokenFailed), userInfo: userInfo)
+                    self.didFail(error: error, fatal: true)
+                    return
+                }
+                if !self.cancelAllRequests {
+                    completionHandler()
+                }
+            })
+        } else {
+            if !self.cancelAllRequests {
+                completionHandler()
+            }
+        }
+    }
     
     func getExamList() {
         var handshakeResource = HandshakeResource(baseURL: self.baseURL, endpoint: (serverAPI?.handshake.endpoint?.location)!)
-        handshakeResource.body = keys.institutionId + "=" + institution + (exam == nil ? "" : ("&" + keys.examId + "=" + exam!))
-        
-        let handshakeRequest = ApiRequest(resource: handshakeResource)
-        pendingRequests?.append(handshakeRequest)
+        let environmentInfo = keys.clientId + "=" + (clientUserId) + "&" + keys.sebOSName + "=" + osName
+        let clientInfo = keys.sebVersion + "=" + sebVersion + "&" + keys.sebMachineName + "=" + machineName
+        handshakeResource.body = keys.institutionId + "=" + institution + (exam == nil ? "" : ("&" + keys.examId + "=" + exam!)) + "&" + environmentInfo + "&" + clientInfo
+
         // ToDo: Implement timeout and sebServerFallback
         let authorizationString = (serverAPI?.handshake.endpoint?.authorization ?? "") + " " + (accessToken ?? "")
         let requestHeaders = [keys.headerContentType : keys.contentTypeFormURLEncoded,
                               keys.headerAuthorization : authorizationString]
-        handshakeRequest.load(httpMethod: handshakeResource.httpMethod, body:handshakeResource.body, headers: requestHeaders, completion: { (handshakeResponse, statusCode, responseHeaders) in
-            guard let connectionTokenString = (responseHeaders?.first(where: { ($0.key as? String)?.caseInsensitiveCompare(keys.sebConnectionToken) == .orderedSame}))?.value else {
-                return
-            }
-            self.connectionToken = connectionTokenString as? String
-            
-            self.startPingTimer()
-            self.startBatteryMonitoring()
-            
-            guard let exams = handshakeResponse else {
-                return
-            }
-            self.exams = exams
-            self.examList = [];
+        loadWithFallback(handshakeResource, httpMethod: handshakeResource.httpMethod, body: handshakeResource.body, headers: requestHeaders, fallbackAttempt: 0, withCompletion: { (handshakeResponse, statusCode, errorResponse, responseHeaders, attempt) in
+            var connectionTokenSuccess = false
+            if statusCode ?? statusCodes.badRequest < statusCodes.notSuccessfullRange {
+                let connectionToken = (responseHeaders?.first(where: { ($0.key as? String)?.caseInsensitiveCompare(keys.sebConnectionToken) == .orderedSame}))?.value
+                if let connectionTokenString = connectionToken {
+                    connectionTokenSuccess = true
+                    self.connectionToken = connectionTokenString as? String
+                    
+                    self.startPingTimer()
+                    self.startBatteryMonitoring()
+                    
+                    if let exams = handshakeResponse  {
+                        self.exams = exams
+                        self.examList = [];
 
-            if (exams != nil) {
-                for exam in exams! {
-                    self.examList?.append(ExamObject(exam))
+                        if (exams != nil) {
+                            for exam in exams! {
+                                self.examList?.append(ExamObject(exam))
+                            }
+                        }
+                        self.serverControllerUIDelegate?.updateExamList()
+                        if self.exam != nil {
+                            self.delegate?.didSelectExam((exams?.first!.examId)!, url: (exams?.first!.url)!)
+                        }
+                        return
+                    }
                 }
             }
-            self.serverControllerUIDelegate?.updateExamList()
-            if self.exam != nil {
-                self.delegate?.didSelectExam((exams?.first!.examId)!, url: (exams?.first!.url)!)
-            }
+            let userInfo = [NSLocalizedDescriptionKey : connectionTokenSuccess ?
+                            NSLocalizedString("Cannot Establish Server Connection", comment: "") :
+                                NSLocalizedString("Cannot Get Exam List", comment: ""),
+                NSLocalizedRecoverySuggestionErrorKey : NSLocalizedString("Contact your server/exam administrator (Server error: ", comment: "") + (errorResponse?.error ?? "Unspecified") + ").",
+                           NSDebugDescriptionErrorKey : "Server didn't return \(connectionTokenSuccess ? "connection token" : "exams"), server error: \(errorResponse?.error ?? "Unspecified"), details: \(errorResponse?.error_description ?? "n/a")"]
+            let error = NSError(domain: sebErrorDomain, code: Int(SEBErrorGettingConnectionTokenFailed), userInfo: userInfo)
+            self.didFail(error: error, fatal: true)
+
         })
     }
     
@@ -229,18 +389,24 @@ public extension SEBServerController {
     
     
     func getExamConfig() {
+        self.serverControllerUIDelegate?.updateStatus(string: NSLocalizedString("Getting Exam Config...", comment: ""), append: false)
         let examConfigResource = ExamConfigResource(baseURL: self.baseURL, endpoint: (serverAPI?.configuration.endpoint?.location)!, queryParameters: [keys.examId + "=" + (selectedExamId)])
         
-        let examConfigRequest = DataRequest(resource: examConfigResource)
-        pendingRequests?.append(examConfigRequest)
         let authorizationString = (serverAPI?.handshake.endpoint?.authorization ?? "") + " " + (accessToken ?? "")
         let requestHeaders = [keys.headerAuthorization : authorizationString,
                               keys.sebConnectionToken : connectionToken!]
-        examConfigRequest.load(httpMethod: examConfigResource.httpMethod, body:examConfigResource.body, headers: requestHeaders, completion: { (examConfigResponse, statusCode, responseHeaders) in
-            guard let config = examConfigResponse else {
-                return
+        loadWithFallback(examConfigResource, httpMethod: examConfigResource.httpMethod, body: examConfigResource.body, headers: requestHeaders, fallbackAttempt: 0, withCompletion: { (examConfigResponse, statusCode, errorResponse, responseHeaders, attempt) in
+            if statusCode ?? statusCodes.badRequest < statusCodes.notSuccessfullRange, let config = examConfigResponse  {
+                self.delegate?.closeServerView(completion: {
+                    self.delegate?.reconfigureWithServerExamConfig(config ?? Data())
+                })
+            } else {
+                let userInfo = [NSLocalizedDescriptionKey : NSLocalizedString("Cannot Get Exam Config", comment: ""),
+                    NSLocalizedRecoverySuggestionErrorKey : NSLocalizedString("Contact your server/exam administrator (Server error: ", comment: "") + (errorResponse?.error ?? "Unspecified") + ").",
+                               NSDebugDescriptionErrorKey : "Server didn't return exam configuration, server error: \(errorResponse?.error ?? "Unspecified"), details: \(errorResponse?.error_description ?? "n/a")"]
+                let error = NSError(domain: sebErrorDomain, code: Int(SEBErrorGettingConnectionTokenFailed), userInfo: userInfo)
+                self.didFail(error: error, fatal: true)
             }
-            self.delegate?.reconfigureWithServerExamConfig(config)
         })
     }
     
@@ -258,12 +424,10 @@ public extension SEBServerController {
     @objc func getMoodleUserId(moodleSession: String, url: URL, endpoint: String) {
         let moodleUserIdResource = MoodleUserIdResource(baseURL: url, endpoint: endpoint)
 
-        let moodleUserIdRequest = DataRequest(resource: moodleUserIdResource)
-        pendingRequests?.append(moodleUserIdRequest)
         let requestHeaders = ["Cookie" : "MoodleSession=\(moodleSession)"]
-        moodleUserIdRequest.load(httpMethod: moodleUserIdResource.httpMethod, body:"", headers: requestHeaders, completion: { (moodleUserIdResponse, statusCode, responseHeaders) in
+        loadWithFallback(moodleUserIdResource, httpMethod: moodleUserIdResource.httpMethod, body: "", headers: requestHeaders, fallbackAttempt: 0, withCompletion: { (moodleUserIdResponse, statusCode, errorResponse, responseHeaders, attempt) in
             if statusCode == 200 && moodleUserIdResponse != nil {
-                guard let moodleUserId = String(data: moodleUserIdResponse!, encoding: .utf8) else {
+                guard let moodleUserId = String(data: moodleUserIdResponse!!, encoding: .utf8) else {
 //                    DDLogDebug("No valid Moodle user ID found")
                     return
                 }
@@ -277,17 +441,13 @@ public extension SEBServerController {
     
     @objc func startMonitoring(userSessionId: String) {
         var handshakeCloseResource = HandshakeCloseResource(baseURL: self.baseURL, endpoint: (serverAPI?.handshake.endpoint?.location)!)
-        let environmentInfo = keys.clientId + "=" + (clientUserId) + "&" + keys.sebOSName + "=" + osName
-        let clientInfo = keys.sebVersion + "=" + sebVersion + "&" + keys.sebMachineName + "=" + machineName
-        handshakeCloseResource.body = keys.examId + "=" + selectedExamId + "&" + environmentInfo + "&" + clientInfo + "&" + keys.sebUserSessionId + "=" + userSessionId
+        handshakeCloseResource.body = keys.examId + "=" + selectedExamId + "&" + keys.sebUserSessionId + "=" + userSessionId
 
-        let handshakeCloseRequest = DataRequest(resource: handshakeCloseResource)
-        pendingRequests?.append(handshakeCloseRequest)
         let authorizationString = (serverAPI?.handshake.endpoint?.authorization ?? "") + " " + (accessToken ?? "")
         let requestHeaders = [keys.headerContentType : keys.contentTypeFormURLEncoded,
                               keys.headerAuthorization : authorizationString,
                               keys.sebConnectionToken : connectionToken!]
-        handshakeCloseRequest.load(httpMethod: handshakeCloseResource.httpMethod, body:handshakeCloseResource.body, headers: requestHeaders, completion: { (handshakeCloseResponse, statusCode, responseHeaders) in
+        loadWithFallback(handshakeCloseResource, httpMethod: handshakeCloseResource.httpMethod, body: handshakeCloseResource.body, headers: requestHeaders, fallbackAttempt: 0, withCompletion: { (handshakeCloseResponse, statusCode, errorResponse, responseHeaders, attempt) in
 //            if handshakeCloseResponse != nil  {
 //                let responseBody = String(data: handshakeCloseResponse!, encoding: .utf8)
 //                DDLogVerbose(responseBody as Any)
@@ -305,17 +465,15 @@ public extension SEBServerController {
                 + "&" + keys.pingNumber + "=" + String(pingNumber)
                 + (pingInstruction == nil ? "" : "&" + keys.pingInstructionConfirm + "=" + pingInstruction!)
             
-            let pingRequest = ApiRequest(resource: pingResource)
-            pendingRequests?.append(pingRequest)
             let authorizationString = (serverAPI?.handshake.endpoint?.authorization ?? "") + " " + (accessToken ?? "")
             let requestHeaders = [keys.headerContentType : keys.contentTypeFormURLEncoded,
                                   keys.headerAuthorization : authorizationString,
                                   keys.sebConnectionToken : connectionToken!]
-            pingRequest.load(httpMethod: pingResource.httpMethod, body:pingResource.body, headers: requestHeaders, completion: { (pingResponse, statusCode, responseHeaders) in
+            load(pingResource, httpMethod: pingResource.httpMethod, body: pingResource.body, headers: requestHeaders, withCompletion: { (pingResponse, statusCode, errorResponse, responseHeaders, attempt) in
+                self.pingInstruction = nil
                 guard let ping = pingResponse else {
                     return
                 }
-                self.pingInstruction = nil
                 if (ping != nil) {
                     self.delegate?.executeSEBInstruction(SEBInstruction(ping!))
                 }
@@ -324,8 +482,8 @@ public extension SEBServerController {
     }
     
     
-    func sendNotification(_ type: String, timestamp: String?, numericValue: Double, text: String?) {
-        if (serverAPI != nil) && (connectionToken != nil) {
+    fileprivate func sendNotification(_ type: String, timestamp: String?, numericValue: Double, text: String?, withCompletion loadCompletion: @escaping (Int?, ErrorResponse?, [AnyHashable: Any]?, Int) -> Void) {
+        if serverAPI != nil && connectionToken != nil {
             let timestampString = timestamp ?? String(format: "%.0f", NSDate().timeIntervalSince1970 * 1000)
             var logResource = LogResource(baseURL: self.baseURL, endpoint: (serverAPI?.log.endpoint?.location)!)
             var logJSON: [String : Any]
@@ -338,81 +496,131 @@ public extension SEBServerController {
             let jsonString = NSString(data: jsonData, encoding: String.Encoding.utf8.rawValue)! as String
             logResource.body = jsonString
             
-            let logRequest = DataRequest(resource: logResource)
-            pendingRequests?.append(logRequest)
+//            let logRequest = DataRequest(resource: logResource)
+//            pendingRequests?.append(logRequest)
             let authorizationString = (serverAPI?.handshake.endpoint?.authorization ?? "") + " " + (accessToken ?? "")
             let requestHeaders = [keys.headerContentType : keys.contentTypeJSON,
                                   keys.headerAuthorization : authorizationString,
                                   keys.sebConnectionToken : connectionToken!]
-            logRequest.load(httpMethod: logResource.httpMethod, body:logResource.body, headers: requestHeaders, completion: { (logResponse, statusCode, responseHeaders) in
-//                if logResponse != nil  {
-//                    let responseBody = String(data: logResponse!, encoding: .utf8)
-//                    DDLogVerbose(responseBody as Any)
-//                }
+            load(logResource, httpMethod: logResource.httpMethod, body: logResource.body, headers: requestHeaders, withCompletion: { (logResponse, statusCode, errorResponse, responseHeaders, attempt) in
+                loadCompletion(statusCode, errorResponse, responseHeaders, attempt)
             })
         }
     }
     
     
     @objc func sendLogEvent(_ logLevel: UInt, timestamp: String, numericValue: Double, message: String) {
-        if (serverAPI != nil) && (connectionToken != nil) {
-            var serverLogLevel: String
-            switch logLevel {
-            case 1:
-                serverLogLevel = keys.logLevelError
-            case 2:
-                serverLogLevel = keys.logLevelWarning
-            case 4:
-                serverLogLevel = keys.logLevelInfo
-            case 8:
-                serverLogLevel = keys.logLevelDebug
-            default:
-                serverLogLevel = keys.logLevelUnknown
+        
+        var serverLogLevel: String
+        switch logLevel {
+        case 1:
+            serverLogLevel = keys.logLevelError
+        case 2:
+            serverLogLevel = keys.logLevelWarning
+        case 4:
+            serverLogLevel = keys.logLevelInfo
+        case 8:
+            serverLogLevel = keys.logLevelDebug
+        default:
+            serverLogLevel = keys.logLevelUnknown
+        }
+        let logEvent = LogEvent(logLevel: serverLogLevel, timestamp: timestamp, numericValue: numericValue, message: message)
+        logSendigDispatchQueue.async {
+            self.logQueue.enqueue(logEvent)
+        }
+        if !sendingLogEvent && serverAPI != nil && connectionToken != nil {
+            logSendigDispatchQueue.async {
+                self.sendLogQueue()
             }
-            sendNotification(serverLogLevel, timestamp: timestamp, numericValue: numericValue, text: message)
+        }
+    }
+    
+    private func sendLogQueue() {
+        if !(logQueue.isEmpty) {
+            sendingLogEvent = true
+            guard let logEvent = self.logQueue.dequeue() else {
+                return
+            }
+            sendLogNotification(logLevel: logEvent.logLevel, timestamp: logEvent.timestamp, numericValue: logEvent.numericValue, text: logEvent.message)
+        } else {
+            sendingLogEvent = false
+        }
+    }
+    
+    private func sendLogNotification(logLevel: String, timestamp: String?, numericValue: Double, text: String?) {
+        sendNotification(logLevel, timestamp: timestamp, numericValue: numericValue, text: text) { statusCode, errorResponse, responseHeaders, attempt in
+            if statusCode ?? statusCodes.badRequest < statusCodes.notSuccessfullRange { //sending was successful
+                self.logSendigDispatchQueue.async {
+                    self.sendLogQueue() //send next log event from the queue
+                }
+            } else {
+                // Sending this event failed: wait for fallback interval and retry
+                self.logSendigDispatchQueue.async {
+                    Thread.sleep(forTimeInterval: self.fallbackAttemptInterval)
+                    self.sendLogNotification(logLevel: logLevel, timestamp: timestamp, numericValue: numericValue, text: text)
+                }
+            }
         }
     }
     
     @objc func sendBatteryEvent(numericValue: Double, message: String?) {
         if (serverAPI != nil) && (connectionToken != nil) {
             let messageString = "<\(keys.notificationTagBattery)> \(message ?? "")"
-            sendNotification(keys.logLevelInfo, timestamp: nil, numericValue: numericValue, text: messageString)
+            sendNotification(keys.logLevelInfo, timestamp: nil, numericValue: numericValue, text: messageString) { statusCode, errorResponse, responseHeaders, attempt in
+            }
         }
     }
     
     @objc func sendLockscreen(message: String?) -> Int64 {
         notificationNumber+=1
-        sendNotification(keys.notificationType, timestamp: nil, numericValue: Double(notificationNumber), text: "<\(keys.notificationTagLockscreen)> \(message ?? "")")
+        sendNotification(keys.notificationType, timestamp: nil, numericValue: Double(notificationNumber), text: "<\(keys.notificationTagLockscreen)> \(message ?? "")") { statusCode, errorResponse, responseHeaders, attempt in
+        }
         return notificationNumber
     }
     
     @objc func sendRaiseHand(message: String?) -> Int64 {
         notificationNumber+=1
-        sendNotification(keys.notificationType, timestamp: nil, numericValue: Double(notificationNumber), text: "<\(keys.notificationTagRaisehand)> \(message ?? "")")
+        sendNotification(keys.notificationType, timestamp: nil, numericValue: Double(notificationNumber), text: "<\(keys.notificationTagRaisehand)> \(message ?? "")") { statusCode, errorResponse, responseHeaders, attempt in
+        }
         return notificationNumber
     }
     
     @objc func sendLowerHand(notificationUID: Int64) {
-        sendNotification(keys.notificationConfirmed, timestamp: nil, numericValue: Double(notificationNumber), text: nil)
+        sendNotification(keys.notificationConfirmed, timestamp: nil, numericValue: Double(notificationNumber), text: nil) { statusCode, errorResponse, responseHeaders, attempt in
+        }
     }
     
     @objc func quitSession(restart: Bool, completion: @escaping (Bool) -> Void) {
-        let quitSessionResource = QuitSessionResource(baseURL: self.baseURL, endpoint: (serverAPI?.handshake.endpoint?.location)!)
-        
-        let quitSessionRequest = DataRequest(resource: quitSessionResource)
-        pendingRequests?.append(quitSessionRequest)
-        let authorizationString = (serverAPI?.handshake.endpoint?.authorization ?? "") + " " + (accessToken ?? "")
-        let requestHeaders = [keys.headerContentType : keys.contentTypeFormURLEncoded,
-                              keys.headerAuthorization : authorizationString,
-                              keys.sebConnectionToken : connectionToken ?? ""]
-        quitSessionRequest.load(httpMethod: quitSessionResource.httpMethod, body:quitSessionResource.body, headers: requestHeaders, completion: { (quitSessionResponse, statusCode, responseHeaders) in
+        if accessToken != nil {
+            let quitSessionResource = QuitSessionResource(baseURL: self.baseURL, endpoint: (serverAPI?.handshake.endpoint?.location)!)
+            
+            let authorizationString = (serverAPI?.handshake.endpoint?.authorization ?? "") + " " + (accessToken ?? "")
+            let requestHeaders = [keys.headerContentType : keys.contentTypeFormURLEncoded,
+                                  keys.headerAuthorization : authorizationString,
+                                  keys.sebConnectionToken : connectionToken ?? ""]
+            load(quitSessionResource, httpMethod: quitSessionResource.httpMethod, body: quitSessionResource.body, headers: requestHeaders, withCompletion: { (quitSessionResponse, statusCode, errorResponse, responseHeaders, attempt) in
+                self.cancelAllRequests = true
+                self.stopPingTimer()
+                self.connectionToken = nil
+    //            if quitSessionResponse != nil  {
+    //                let responseBody = String(data: quitSessionResponse!, encoding: .utf8)
+    //                DDLogVerbose(responseBody as Any)
+    //            }
+                self.session.invalidateAndCancel()
+                completion(restart)
+            })
+        } else {
+            self.cancelAllRequests = true
             self.stopPingTimer()
             self.connectionToken = nil
-//            if quitSessionResponse != nil  {
-//                let responseBody = String(data: quitSessionResponse!, encoding: .utf8)
-//                DDLogVerbose(responseBody as Any)
-//            }
+            self.session.invalidateAndCancel()
             completion(restart)
-        })
+        }
+    }
+    
+    fileprivate func didFail(error: NSError, fatal: Bool) {
+        if !cancelAllRequests {
+            self.delegate?.didFail(error: error, fatal: fatal)
+        }
     }
 }

@@ -682,8 +682,8 @@ static NSMutableSet *browserWindowControllers;
     _resettingSettings = YES;
     if (_sebServerViewDisplayed) {
         [self dismissViewControllerAnimated:YES completion:^{
-            self.sebServerViewDisplayed = false;
-            self.establishingSEBServerConnection = false;
+            self.sebServerViewDisplayed = NO;
+            self.establishingSEBServerConnection = NO;
             [self conditionallyResetSettings];
         }];
         return;
@@ -796,6 +796,7 @@ static NSMutableSet *browserWindowControllers;
     // Write just default SEB settings to UserDefaults
     NSDictionary *emptySettings = [NSDictionary dictionary];
     [self.configFileController storeIntoUserDefaults:emptySettings];
+    [[NSUserDefaults standardUserDefaults] setSecureString:@"" forKey:@"configFileName"];
     
     [[SEBCryptor sharedSEBCryptor] updateEncryptedUserDefaults:YES updateSalt:YES];
     
@@ -830,7 +831,7 @@ static NSMutableSet *browserWindowControllers;
 }
 
 
-#pragma mark - Inititial Configuration Assistant
+#pragma mark - Initial Configuration Assistant
 
 - (void)openInitAssistant
 {
@@ -980,14 +981,14 @@ static NSMutableSet *browserWindowControllers;
     // Check if the initialize settings assistant is open
     if (_initAssistantOpen) {
         [self dismissViewControllerAnimated:YES completion:^{
-            self.initAssistantOpen = false;
+            self.initAssistantOpen = NO;
             [self conditionallyShowSettingsModal];
         }];
         return;
     } else if (_sebServerViewDisplayed) {
         [self dismissViewControllerAnimated:YES completion:^{
-            self.sebServerViewDisplayed = false;
-            self.establishingSEBServerConnection = false;
+            self.sebServerViewDisplayed = NO;
+            self.establishingSEBServerConnection = NO;
             [self conditionallyShowSettingsModal];
         }];
         return;
@@ -1544,11 +1545,11 @@ static NSMutableSet *browserWindowControllers;
     BOOL readMDMConfig = NO;
     
     // Check again if not running in exam mode, to catch timing related issues
-    if (!NSUserDefaults.userDefaultsPrivate) {
+    BOOL clientConfigActive = !NSUserDefaults.userDefaultsPrivate;
+    if (clientConfigActive) {
         if (!_isReconfiguringToMDMConfig) {
             // Check if we received a new configuration from an MDM server
             _isReconfiguringToMDMConfig = YES;
-            BOOL clientConfigActive = !NSUserDefaults.userDefaultsPrivate;
             NSString *currentURL = [self.browserTabViewController.currentURL.absoluteString stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"/"]];
             NSString *currentStartURLTrimmed = [currentStartURL stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"/"]];
             DDLogVerbose(@"%s: %@ receive MDM Managed Configuration dictionary. Check for openWebpages.count: %lu = 1 AND (currentMainHost == nil OR currentMainHost %@ is equal to currentStartURL %@ OR clientConfigSecureModePaused: %d)",
@@ -1559,7 +1560,7 @@ static NSMutableSet *browserWindowControllers;
                          _clientConfigSecureModePaused);
             if (serverConfig.count > 0 &&
                 clientConfigActive &&
-                (!currentURL ||
+                (!currentURL || !currentStartURL ||
                  (self.browserTabViewController.openWebpages.count == 1 &&
                   [currentURL isEqualToString:currentStartURLTrimmed]) ||
                  _clientConfigSecureModePaused))
@@ -1609,6 +1610,7 @@ static NSMutableSet *browserWindowControllers;
 
 - (void) handleMDMServerConfig:(NSDictionary *)serverConfig
 {
+    _establishingSEBServerConnection = NO;
     [self.configFileController reconfigueClientWithMDMSettingsDict:serverConfig
                                                           callback:self
                                                           selector:@selector(storeNewSEBSettingsSuccessful:)];
@@ -1635,19 +1637,14 @@ static NSMutableSet *browserWindowControllers;
 - (BOOL)isReceivedServerConfigNew:(NSDictionary *)newReceivedServerConfig
 {
     NSUserDefaults *preferences = [NSUserDefaults standardUserDefaults];
-    for (NSString *key in newReceivedServerConfig) {
-        if (![key isEqualToString:@"originatorVersion"]) {
-            id newValue = [newReceivedServerConfig objectForKey:key];
-            id currentValue = [preferences secureObjectForKey:[preferences prefixKey:key]];
-            if (![newValue isEqual:currentValue]) {
-                DDLogDebug(@"%s: Configuration received from MDM server is different from current settings, it will be used to reconfigure SEB.", __FUNCTION__);
-                receivedServerConfig = newReceivedServerConfig;
-                return YES;
-            }
-        }
+    if ([preferences isReceivedServerConfigNew:newReceivedServerConfig]) {
+        DDLogDebug(@"%s: Configuration received from MDM server is different from current settings, it will be used to reconfigure SEB.", __FUNCTION__);
+        receivedServerConfig = newReceivedServerConfig;
+        return YES;
+    } else {
+        DDLogVerbose(@"%s: Configuration received from MDM server is same as current settings, ignore it.", __FUNCTION__);
+        return NO;
     }
-    DDLogVerbose(@"%s: Configuration received from MDM server is same as current settings, ignore it.", __FUNCTION__);
-    return NO;
 }
 
 
@@ -1954,17 +1951,44 @@ void run_on_ui_thread(dispatch_block_t block)
     } else {
         if (!temporary) {
             if (@available(iOS 11.0, *)) {
+                BOOL browserMediaCaptureCamera = [preferences secureBoolForKey:@"org_safeexambrowser_SEB_browserMediaCaptureCamera"];
+                BOOL browserMediaCaptureMicrophone = [preferences secureBoolForKey:@"org_safeexambrowser_SEB_browserMediaCaptureMicrophone"];
                 BOOL jitsiMeetEnable = [preferences secureBoolForKey:@"org_safeexambrowser_SEB_jitsiMeetEnable"];
-                if (jitsiMeetEnable) {
-                    void (^conditionallyStartProctoring)(void) =
+                BOOL zoomEnable = [preferences secureBoolForKey:@"org_safeexambrowser_SEB_zoomEnable"];
+                BOOL proctoringSession = jitsiMeetEnable || zoomEnable;
+                BOOL webApplications = browserMediaCaptureCamera || browserMediaCaptureMicrophone;
+
+                if ((zoomEnable && !ZoomProctoringSupported) || (jitsiMeetEnable && !JitsiMeetProctoringSupported)) {
+                    NSString *notAvailableRequiredRemoteProctoringService = [NSString stringWithFormat:@"%@%@", zoomEnable && !ZoomProctoringSupported ? @"Zoom " : @"",
+                                                         jitsiMeetEnable && !JitsiMeetProctoringSupported ? @"Jitsi Meet " : @""];
+                    DDLogError(@"%@Remote proctoring not available", notAvailableRequiredRemoteProctoringService);
+                    run_on_ui_thread(^{
+                         
+                        [self alertWithTitle:NSLocalizedString(@"Remote Proctoring Not Available", nil)
+                                     message:[NSString stringWithFormat:NSLocalizedString(@"Current settings require %@ remote proctoring, which this %@ version doesn't support. Use the correct %@ version required by your exam organizer.", nil), notAvailableRequiredRemoteProctoringService, SEBShortAppName, SEBShortAppName]
+                                action1Title:NSLocalizedString(@"OK", nil)
+                              action1Handler:^ {
+                            self.alertController = nil;
+                            [self sessionQuitRestart:NO];
+                        }
+                                action2Title:nil
+                              action2Handler:^{}];
+                    });
+                    return;
+                }
+                
+                void (^conditionallyStartProctoring)(void) =
+                ^{
+                    // OK action handler
+                    void (^startRemoteProctoringOK)(void) =
                     ^{
-                        // OK action handler
-                        void (^startRemoteProctoringOK)(void) =
-                        ^{
+                        if (jitsiMeetEnable) {
                             [self openJitsiView];
                             [self.jitsiViewController openJitsiMeetWithSender:self];
-                            run_on_ui_thread(completionBlock);
-                        };
+                        }
+                        run_on_ui_thread(completionBlock);
+                    };
+                    if (jitsiMeetEnable) {
                         // Check if previous SEB session already had proctoring active
                         if (self.previousSessionJitsiMeetEnabled) {
                             run_on_ui_thread(startRemoteProctoringOK);
@@ -1981,8 +2005,17 @@ void run_on_ui_thread(dispatch_block_t block)
                                 [[NSNotificationCenter defaultCenter]
                                  postNotificationName:@"requestQuit" object:self];
                             }];
+                            return;
                         }
-                    };
+                    } else {
+                        run_on_ui_thread(completionBlock);
+                    }
+                };
+                
+                if (browserMediaCaptureMicrophone ||
+                    browserMediaCaptureCamera ||
+                    zoomEnable ||
+                    jitsiMeetEnable) {
                     AVAuthorizationStatus audioAuthorization = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio];
                     AVAuthorizationStatus videoAuthorization = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeVideo];
                     if (!(audioAuthorization == AVAuthorizationStatusAuthorized &&
@@ -1990,11 +2023,15 @@ void run_on_ui_thread(dispatch_block_t block)
                         if (self.alertController) {
                             [self.alertController dismissViewControllerAnimated:NO completion:nil];
                         }
-                        NSString *microphone = audioAuthorization != AVAuthorizationStatusAuthorized ? NSLocalizedString(@"microphone", nil) : @"";
+                        NSString *microphone = (proctoringSession || browserMediaCaptureMicrophone) && audioAuthorization != AVAuthorizationStatusAuthorized ? NSLocalizedString(@"microphone", nil) : @"";
                         NSString *camera = @"";
-                        if (videoAuthorization != AVAuthorizationStatusAuthorized) {
+                        if ((proctoringSession || browserMediaCaptureCamera) && videoAuthorization != AVAuthorizationStatusAuthorized) {
                             camera = [NSString stringWithFormat:@"%@%@", NSLocalizedString(@"camera", nil), microphone.length > 0 ? NSLocalizedString(@" and ", nil) : @""];
                         }
+                        NSString *permissionsRequiredFor = [NSString stringWithFormat:@"%@%@%@",
+                                                            proctoringSession ? NSLocalizedString(@"remote proctoring", nil) : @"",
+                                                            proctoringSession && webApplications ? NSLocalizedString(@" and ", nil) : @"",
+                                                            webApplications ? NSLocalizedString(@"web applications", nil) : @""];
                         NSString *resolveSuggestion;
                         NSString *resolveSuggestion2;
                         NSString *message;
@@ -2008,12 +2045,12 @@ void run_on_ui_thread(dispatch_block_t block)
                         }
                         if (videoAuthorization == AVAuthorizationStatusRestricted ||
                             audioAuthorization == AVAuthorizationStatusRestricted) {
-                            message = [NSString stringWithFormat:NSLocalizedString(@"For this session, remote proctoring is required. On this device, %@%@ access is restricted. Ask your IT support to provide you a device without these restrictions.", nil), camera, microphone];
+                            message = [NSString stringWithFormat:NSLocalizedString(@"For this session, %@%@ access for %@ is required. On this device, %@%@ access is restricted. Ask your IT support to provide you a device without these restrictions.", nil), camera, microphone, permissionsRequiredFor, camera, microphone];
                         } else {
-                            message = [NSString stringWithFormat:NSLocalizedString(@"For this session, remote proctoring is required. You need to authorize %@%@ access %@before you can %@start the session.", nil), camera, microphone, resolveSuggestion, resolveSuggestion2];
+                            message = [NSString stringWithFormat:NSLocalizedString(@"For this session, %@%@ access for %@ is required. You need to authorize %@%@ access %@before you can %@start the session.", nil), camera, microphone, permissionsRequiredFor, camera, microphone, resolveSuggestion, resolveSuggestion2];
                         }
                         
-                        self.alertController = [UIAlertController alertControllerWithTitle:NSLocalizedString(@"Permissions Required for Remote Proctoring", nil)
+                        self.alertController = [UIAlertController alertControllerWithTitle:[NSString stringWithFormat:NSLocalizedString(@"Permissions Required for %@", nil), permissionsRequiredFor.localizedCapitalizedString]
                                                                                    message:message
                                                                             preferredStyle:UIAlertControllerStyleAlert];
                         
@@ -2073,20 +2110,6 @@ void run_on_ui_thread(dispatch_block_t block)
                     }
                 } else {
                     self.previousSessionJitsiMeetEnabled = NO;
-                    if ([preferences secureBoolForKey:@"org_safeexambrowser_SEB_zoomEnable"]) {
-                        run_on_ui_thread(^{
-                            [self alertWithTitle:NSLocalizedString(@"Zoom Remote Proctoring Not Available", nil)
-                                         message:NSLocalizedString(@"Current settings require Zoom remote proctoring, which this SEB version doesn't support. Use the correct SEB version required by your exam organizer.", nil)
-                                    action1Title:NSLocalizedString(@"OK", nil)
-                                  action1Handler:^ {
-                                self.alertController = nil;
-                                [self sessionQuitRestart:NO];
-                            }
-                                    action2Title:nil
-                                  action2Handler:^{}];
-                        });
-                        return;
-                    }
                 }
             }
             run_on_ui_thread(completionBlock);
@@ -2507,12 +2530,18 @@ void run_on_ui_thread(dispatch_block_t block)
     BOOL iPhoneXLandscape = (self.traitCollection.verticalSizeClass == UIUserInterfaceSizeClassCompact &&
                              self.traitCollection.horizontalSizeClass != UIUserInterfaceSizeClassRegular);
     if (iconWidth) {
+        if (@available(iOS 13.0, *)) {
+            textSearchBar.searchTextField.backgroundColor = UIColor.clearColor;
+        }
         searchBarTopConstraint.constant = navigationBarItemsOffset == -4 ? 6 : (iPhoneXLandscape ? -4 : 2);
         if (!_showNavigationBarTemporarily && toolbarSearchBarActiveRemovedOtherItems) {
             toolbarSearchBarActiveRemovedOtherItems = NO;
             [self restoreNavigationBarItemsConditionally:NO];
         }
     } else {
+        if (@available(iOS 13.0, *)) {
+            textSearchBar.searchTextField.backgroundColor = nil;
+        }
         if (self.traitCollection.horizontalSizeClass == UIUserInterfaceSizeClassCompact && !toolbarSearchBarActiveRemovedOtherItems) {
             toolbarSearchBarActiveRemovedOtherItems = YES;
             self.navigationItem.leftBarButtonItems = nil;
@@ -2625,7 +2654,7 @@ void run_on_ui_thread(dispatch_block_t block)
 {
     [self closeSettingsBeforeOpeningSEBConfig:sebConfigData
                                      callback:self
-                                     selector:@selector(storeNewSEBSettings:)];
+                                     selector:@selector(storeNewSEBSettingsFromServer:)];
 }
 
 
@@ -2640,7 +2669,7 @@ void run_on_ui_thread(dispatch_block_t block)
 - (void) conditionallyOpenSEBConfigFromMDMServer:(NSDictionary *)serverConfig
 {
     // Check if not running in exam mode
-    if (!NSUserDefaults.userDefaultsPrivate  && [self isReceivedServerConfigNew:serverConfig]) {
+    if (!NSUserDefaults.userDefaultsPrivate && [self isReceivedServerConfigNew:serverConfig]) {
         _didReceiveMDMConfig = YES;
         [self resetReceivedServerConfig];
         
@@ -2768,11 +2797,11 @@ void run_on_ui_thread(dispatch_block_t block)
         return;
     } else if (_sebServerViewDisplayed) {
         [self dismissViewControllerAnimated:YES completion:^{
-            self.sebServerViewDisplayed = false;
-            self.establishingSEBServerConnection = false;
+            self.sebServerViewDisplayed = NO;
+            self.establishingSEBServerConnection = NO;
             // Reset the finished starting up flag, because if loading settings fails or is canceled,
             // we need to load the webpage
-            self.finishedStartingUp = false;
+            self.finishedStartingUp = NO;
             [self conditionallyOpenSEBConfig:sebConfig
                                     callback:callback
                                     selector:selector];
@@ -2815,7 +2844,7 @@ void run_on_ui_thread(dispatch_block_t block)
     if (!sebUIInitialized) {
         [self initSEBUIWithCompletionBlock:nil temporary:YES];
     }
-    SEBAbstractWebView *tempWebView = [self.browserTabViewController openNewTabWithURL:url overrideSpellCheck:YES];
+    SEBAbstractWebView *tempWebView = [self.browserTabViewController openNewTabWithURL:url configuration:nil overrideSpellCheck:YES];
     tempWebView.originalURL = originalURL;
     
     return tempWebView;
@@ -2909,7 +2938,7 @@ void run_on_ui_thread(dispatch_block_t block)
 
 
 // Decrypt, parse and store new SEB settings and report if it was successful
-- (void) storeNewSEBSettings:(NSData *)sebData
+- (void) storeNewSEBSettingsFromServer:(NSData *)sebData
 {
     [self.configFileController storeNewSEBSettings:sebData
                                         forEditing:false
@@ -2959,7 +2988,6 @@ void run_on_ui_thread(dispatch_block_t block)
     if (!error) {
         // If decrypting new settings was successfull
         receivedServerConfig = nil;
-        self.isReconfiguringToMDMConfig = NO;
         self.scannedQRCode = NO;
         [[NSUserDefaults standardUserDefaults] setSecureString:self->startURLQueryParameter forKey:@"org_safeexambrowser_startURLQueryParameter"];
         // If we got a valid filename from the opened config file
@@ -2968,14 +2996,15 @@ void run_on_ui_thread(dispatch_block_t block)
         if (newSettingsFilename.length > 0) {
             [[NSUserDefaults standardUserDefaults] setSecureString:newSettingsFilename forKey:@"configFileName"];
         }
-        self.isReconfiguringToMDMConfig = NO;
-        self.didReceiveMDMConfig = NO;
-        dispatch_async(dispatch_get_main_queue(), ^{
+        run_on_ui_thread(^{
             [self restartExamQuitting:NO];
+            self.isReconfiguringToMDMConfig = NO;
+            self.didReceiveMDMConfig = NO;
         });
         
     } else {
-        
+
+        self.establishingSEBServerConnection = NO;
         // If decrypting new settings wasn't successfull, we have to restore the path to the old settings
         [[MyGlobals sharedMyGlobals] setCurrentConfigURL:self->currentConfigPath];
         
@@ -2989,7 +3018,7 @@ void run_on_ui_thread(dispatch_block_t block)
                                                    NSLocalizedFailureReasonErrorKey : [NSString stringWithFormat:NSLocalizedString(@"No valid %@ config found.", nil), SEBShortAppName],
                                                    NSUnderlyingErrorKey : error}];
             }
-            dispatch_async(dispatch_get_main_queue(), ^{
+            run_on_ui_thread(^{
                 if (self.alertController) {
                     [self.alertController dismissViewControllerAnimated:NO completion:nil];
                 }
@@ -3015,7 +3044,7 @@ void run_on_ui_thread(dispatch_block_t block)
             DDLogError(@"%s: Reconfiguring from MDM config failed, restarting SEB session.", __FUNCTION__);
             self.isReconfiguringToMDMConfig = NO;
             self.didReceiveMDMConfig = NO;
-            dispatch_async(dispatch_get_main_queue(), ^{
+            run_on_ui_thread(^{
                 [self restartExamQuitting:NO];
             });
             
@@ -3023,15 +3052,14 @@ void run_on_ui_thread(dispatch_block_t block)
             self.pausedSAMAlertDisplayed = NO;
             // Continue starting up SEB without resetting settings
             // but user interface might need to be re-initialized
-            dispatch_async(dispatch_get_main_queue(), ^{
+            run_on_ui_thread(^{
                 [self initSEBUIWithCompletionBlock:^{
                     [self conditionallyStartKioskMode];
                 }];
             });
             
         } else {
-            self.establishingSEBServerConnection = NO;
-            dispatch_async(dispatch_get_main_queue(), ^{
+            run_on_ui_thread(^{
                 [self showReconfiguringAlertWithError:error];
             });
         }
@@ -3109,7 +3137,7 @@ void run_on_ui_thread(dispatch_block_t block)
 
 #pragma mark - Start, restart and quit exam session
 
-- (void) startExam
+- (void) startExamWithFallback:(BOOL)fallback
 {
     DDLogInfo(@"%s", __FUNCTION__);
     NSUserDefaults *preferences = [NSUserDefaults standardUserDefaults];
@@ -3129,7 +3157,7 @@ void run_on_ui_thread(dispatch_block_t block)
             [_alertController addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Retry", nil)
                                                                  style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
                 self.alertController = nil;
-                [self startExam];
+                [self startExamWithFallback:fallback];
             }]];
             if (NSUserDefaults.userDefaultsPrivate) {
                 [_alertController addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Cancel", nil)
@@ -3145,54 +3173,47 @@ void run_on_ui_thread(dispatch_block_t block)
         }
     }
     
-    if (_establishingSEBServerConnection == YES) {
+    if (_establishingSEBServerConnection == YES && !fallback) {
         _startingExamFromSEBServer = YES;
         [self.serverController startExamFromServer];
-    } else {
-        if ([preferences secureIntegerForKey:@"org_safeexambrowser_SEB_sebMode"] == sebModeSebServer) {
-            NSString *sebServerURLString = [preferences secureStringForKey:@"org_safeexambrowser_SEB_sebServerURL"];
-            NSDictionary *sebServerConfiguration = [preferences secureDictionaryForKey:@"org_safeexambrowser_SEB_sebServerConfiguration"];
-            _establishingSEBServerConnection = YES;
+        return;
+    }
+    if ([preferences secureIntegerForKey:@"org_safeexambrowser_SEB_sebMode"] == sebModeSebServer &&
+        !fallback) {
+        NSString *sebServerURLString = [preferences secureStringForKey:@"org_safeexambrowser_SEB_sebServerURL"];
+        NSDictionary *sebServerConfiguration = [preferences secureDictionaryForKey:@"org_safeexambrowser_SEB_sebServerConfiguration"];
+        _establishingSEBServerConnection = YES;
+        NSError *error = [self.serverController connectToServer:[NSURL URLWithString:sebServerURLString] withConfiguration:sebServerConfiguration];
+        if (!error) {
+            // All necessary information for connecting to SEB Server was available in settings:
+            // try to connect to SEB Server and wait for delegate method to be called with success/failure
             [self showSEBServerView];
-            if ([self.serverController connectToServer:[NSURL URLWithString:sebServerURLString] withConfiguration:sebServerConfiguration]) {
-                // All necessary information for connecting to SEB Server was available in settings:
-                // try to connect to SEB Server and wait for delegate method to be called with success/failure
-                return;
-            } else {
-                // Cannot connect as some SEB Server settings/API endpoints are missing
-                // Abort if fallback isn't enabled
-                if ([preferences secureBoolForKey:@"org_safeexambrowser_SEB_sebServerFallback"] == NO) {
-                    [self alertWithTitle:NSLocalizedString(@"Cannot Connect to SEB Server", nil)
-                                 message:NSLocalizedString(@"Check your configuration, probably connection settings are incorrect.", nil)
-                            action1Title:NSLocalizedString(@"OK", nil)
-                          action1Handler:^(void){
-                        [self closeServerView:self];
-                    }
-                            action2Title:nil
-                          action2Handler:nil];
-                    return;
-                }
-            }
-        }
-        NSString *startURLString = [[NSUserDefaults standardUserDefaults] secureStringForKey:@"org_safeexambrowser_SEB_startURL"];
-        NSURL *startURL = [NSURL URLWithString:startURLString];
-        if (startURLString.length == 0 ||
-            (([startURL.host hasSuffix:@"safeexambrowser.org"] ||
-              [startURL.host hasSuffix:SEBWebsiteShort]) &&
-             [startURL.path hasSuffix:@"start"]))
-        {
-            // Start URL was set to the default value, show init assistant
-            [self openInitAssistant];
+            return;
         } else {
-            _sessionRunning = YES;
-            
-            // Load all open web pages from the persistent store and re-create webview(s) for them
-            // or if no persisted web pages are available, load the start URL
-            [_browserTabViewController loadPersistedOpenWebPages];
-            
-            [self persistSecureExamStartURL:startURLString];
+            // Cannot connect as some SEB Server settings/API endpoints are missing
+            [self didFailWithError:error fatal:YES];
+            return;
         }
     }
+    NSString *startURLString = [[NSUserDefaults standardUserDefaults] secureStringForKey:@"org_safeexambrowser_SEB_startURL"];
+    NSURL *startURL = [NSURL URLWithString:startURLString];
+    if (startURLString.length == 0 ||
+        (([startURL.host hasSuffix:@"safeexambrowser.org"] ||
+          [startURL.host hasSuffix:SEBWebsiteShort]) &&
+         [startURL.path hasSuffix:@"start"]))
+    {
+        // Start URL was set to the default value, show init assistant
+        [self openInitAssistant];
+    } else {
+        _sessionRunning = YES;
+        
+        // Load all open web pages from the persistent store and re-create webview(s) for them
+        // or if no persisted web pages are available, load the start URL
+        [_browserTabViewController loadPersistedOpenWebPages];
+        
+        [self persistSecureExamStartURL:startURLString];
+    }
+
 }
 
 // Persist start URL of a secure exam
@@ -3301,17 +3322,6 @@ void run_on_ui_thread(dispatch_block_t block)
         }];
     } else {
         completion(restart);
-    }
-}
-
-
-- (void) didCloseSEBServerConnectionRestart:(BOOL)restart
-{
-    _establishingSEBServerConnection = NO;
-    if (restart) {
-        [self restartExamQuitting:YES];
-    } else {
-        [self quitSEBOrSession];
     }
 }
 
@@ -3519,7 +3529,7 @@ void run_on_ui_thread(dispatch_block_t block)
             } else {
                 // If kiosk mode settings stay same, we just initialize SEB with new settings and start the exam
                 [self initSEBUIWithCompletionBlock:^{
-                    [self startExam];
+                    [self startExamWithFallback:NO];
                 }];
             }
             
@@ -3577,7 +3587,7 @@ void run_on_ui_thread(dispatch_block_t block)
 
 - (void) showSEBServerView
 {
-    if (_sebServerViewDisplayed == false) {
+    if (_sebServerViewDisplayed == NO) {
         if (_alertController) {
             [_alertController dismissViewControllerAnimated:NO completion:^{
                 self.alertController = nil;
@@ -3596,21 +3606,12 @@ void run_on_ui_thread(dispatch_block_t block)
         _sebServerViewController.modalInPopover = YES;
     }
     
+    _sebServerViewController.sebServerController = self.serverController.sebServerController;
+    self.serverController.sebServerController.serverControllerUIDelegate = self.sebServerViewController;
+
     [self.topMostController presentViewController:_sebServerViewController animated:YES completion:^{
-        self.sebServerViewDisplayed = true;
-        self.sebServerViewController.sebServerController = self.serverController.sebServerController;
-        self.serverController.sebServerController.serverControllerUIDelegate = self.sebServerViewController;
+        self.sebServerViewDisplayed = YES;
         [self.sebServerViewController updateExamList];
-    }];
-}
-
-
-- (void) closeServerView:(id)sender
-{
-    _establishingSEBServerConnection = false;
-    _sebServerViewDisplayed = false;
-    [_sebServerViewController dismissViewControllerAnimated:YES completion:^{
-        [self sessionQuitRestart:NO];
     }];
 }
 
@@ -3624,44 +3625,17 @@ void run_on_ui_thread(dispatch_block_t block)
 
 - (void) didSelectExamWithExamId:(NSString *)examId url:(NSString *)url
 {
-    _sebServerViewDisplayed = false;
-    [_sebServerViewController dismissViewControllerAnimated:YES completion:^{
-        [self.serverController examSelected:examId url:url];
-    }];
+    [self.serverController examSelected:examId url:url];
 }
 
 
 - (void) loginToExam:(NSString *)url
 {
     NSURL *examURL = [NSURL URLWithString:url];
-    [_browserTabViewController openNewTabWithURL:examURL];
+    [_browserTabViewController openNewTabWithURL:examURL configuration:nil];
     [self persistSecureExamStartURL:url];
     self.browserController.sebServerExamStartURL = examURL;
-    _sessionRunning = true;
-}
-
-
-- (void) examineCookies:(NSArray<NSHTTPCookie *>*)cookies forURL:(NSURL *)url
-{
-    if (_establishingSEBServerConnection) {
-        [self.serverController examineCookies:cookies forURL:url];
-    }
-}
-
-
-- (void) examineHeaders:(NSDictionary<NSString *,NSString *>*)headerFields forURL:(NSURL *)url
-{
-    if (_establishingSEBServerConnection) {
-        [self.serverController examineHeaders:headerFields forURL:url];
-    }
-}
-
-
-- (void) shouldStartLoadFormSubmittedURL:(NSURL *)url
-{
-    if (_establishingSEBServerConnection) {
-        [self.serverController shouldStartLoadFormSubmittedURL:url];
-    }
+    _sessionRunning = YES;
 }
 
 
@@ -3673,12 +3647,158 @@ void run_on_ui_thread(dispatch_block_t block)
 }
 
 
+- (void) didFailWithError:(NSError *)error fatal:(BOOL)fatal
+{
+    BOOL optionallyAttemptFallback = fatal && !_startingExamFromSEBServer && !_sebServerConnectionEstablished;
+    DDLogError(@"SEB Server connection did fail with error: %@%@", [error.userInfo objectForKey:NSDebugDescriptionErrorKey], optionallyAttemptFallback ? @", optionally attempt failback" : @" This is a non-fatal error, no fallback necessary.");
+    if (optionallyAttemptFallback) {
+        if (!self.serverController.fallbackEnabled) {
+            DDLogError(@"Aborting SEB Server connection as fallback isn't enabled");
+            [self closeServerViewWithCompletion:^{
+                NSString *informativeText = [NSString stringWithFormat:@"%@\n%@", [error.userInfo objectForKey:NSLocalizedDescriptionKey], [error.userInfo objectForKey:NSLocalizedRecoverySuggestionErrorKey]];
+                [self alertWithTitle:NSLocalizedString(@"Connection to SEB Server Failed", nil)
+                             message:informativeText
+                        action1Title:NSLocalizedString(@"Retry", nil)
+                      action1Handler:^(void){
+                    self.establishingSEBServerConnection = NO;
+                    [self startExamWithFallback:NO];
+                }
+                        action2Title:NSLocalizedString(@"Quit Session", nil)
+                      action2Handler:^(void){
+                    [self closeServerViewAndRestart:self];
+                }];
+                return;
+            }];
+            return;
+        } else {
+            [self closeServerViewWithCompletion:^{
+                DDLogInfo(@"Server connection failed: Querying user if fallback should be used");
+                NSString *informativeText = [NSString stringWithFormat:@"%@\n%@", [error.userInfo objectForKey:NSLocalizedDescriptionKey], [error.userInfo objectForKey:NSLocalizedRecoverySuggestionErrorKey]];
+                [self alertWithTitle:NSLocalizedString(@"Connection to SEB Server Failed: Fallback Option", nil)
+                             message:informativeText
+                      preferredStyle:UIAlertControllerStyleAlert
+                        action1Title:NSLocalizedString(@"Retry", nil)
+                        action1Style:UIAlertActionStyleDefault
+                      action1Handler:^(void){
+                    DDLogInfo(@"User selected Retry option");
+                    self.establishingSEBServerConnection = NO;
+                    [self startExamWithFallback:NO];
+                }
+                 
+                        action2Title:NSLocalizedString(@"Fallback", nil)
+                        action2Style:UIAlertActionStyleDefault
+                      action2Handler:^(void){
+                    DDLogInfo(@"User selected Fallback option");
+                    NSUserDefaults *preferences = [NSUserDefaults standardUserDefaults];
+                    NSString *sebServerFallbackPasswordHash = [preferences secureStringForKey:@"org_safeexambrowser_SEB_sebServerFallbackPasswordHash"];
+                    // If SEB Server fallback password is set, then restrict fallback
+                    if (sebServerFallbackPasswordHash.length != 0) {
+                        DDLogInfo(@"%s Displaying SEB Server fallback password alert", __FUNCTION__);
+                        [self promptPasswordWithMessageText:NSLocalizedString(@"Enter SEB Server fallback password:", nil) title:NSLocalizedString(@"SEB Server Fallback Password Required", nil) completion:^(NSString* password) {
+                            
+                            SEBKeychainManager *keychainManager = [[SEBKeychainManager alloc] init];
+                            if (password.length > 0 && [sebServerFallbackPasswordHash caseInsensitiveCompare:[keychainManager generateSHAHashString:password]] == NSOrderedSame) {
+                                DDLogInfo(@"Correct SEB Server fallback password entered");
+                                DDLogInfo(@"Open startURL as SEB Server fallback");
+                                self.establishingSEBServerConnection = NO;
+                                [self startExamWithFallback:YES];
+                                
+                            } else {
+                                DDLogInfo(@"%@ SEB Server fallback password entered", password.length > 0 ? @"Wrong" : @"No");
+                                
+                                self.alertController = [UIAlertController  alertControllerWithTitle:password.length > 0 ? NSLocalizedString(@"Wrong SEB Server Fallback Password entered", nil) : NSLocalizedString(@"No SEB Server Fallback Password entered", nil)
+                                                                                            message:NSLocalizedString(@"If you don't enter the correct SEB Server fallback password, then you cannot invoke fallback.", nil)
+                                                                                     preferredStyle:UIAlertControllerStyleAlert];
+                                [self.alertController addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"OK", nil)
+                                                                                         style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+                                    self.alertController = nil;
+                                    [self didFailWithError:error fatal:fatal];
+                                    
+                                }]];
+                                [self.topMostController presentViewController:self.alertController animated:NO completion:nil];
+                            }
+                        }];
+                    } else {
+                        DDLogInfo(@"Open startURL as SEB Server fallback");
+                        self.establishingSEBServerConnection = NO;
+                        [self startExamWithFallback:YES];
+                    }
+                }
+                 
+                        action3Title:NSLocalizedString(@"Quit Session", nil)
+                        action3Style:UIAlertActionStyleDestructive
+                      action3Handler:^(void){
+                    DDLogInfo(@"User selected Quit option");
+                    [self closeServerViewAndRestart:self];
+                }];
+                return;
+            }];
+        }
+    }
+}
+
+
+// Ask the user to enter a password using the message text and then call the callback selector with the password as parameter
+- (void) promptPasswordWithMessageText:(NSString *)messageText title:(NSString *)titleString completion:(void (^)(NSString * _Nullable ))completion;
+{
+    if (self.alertController) {
+        [self.alertController dismissViewControllerAnimated:NO completion:nil];
+    }
+    self.alertController = [UIAlertController alertControllerWithTitle:titleString
+                                                               message:messageText
+                                                        preferredStyle:UIAlertControllerStyleAlert];
+    
+    [self.alertController addTextFieldWithConfigurationHandler:^(UITextField *textField)
+     {
+        textField.placeholder = NSLocalizedString(@"Password", nil);
+        textField.secureTextEntry = YES;
+    }];
+    
+    [self.alertController addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"OK", nil)
+                                                             style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        NSString *password = self.alertController.textFields.firstObject.text;
+        self.alertController = nil;
+        completion(password);
+    }]];
+    
+    [self.alertController addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Cancel", nil)
+                                                             style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
+        self.alertController = nil;
+        completion(nil);
+    }]];
+    
+    [self.topMostController presentViewController:self.alertController animated:NO completion:nil];
+}
+
+
+- (void) closeServerViewAndRestart:(id)sender
+{
+    [self closeServerViewWithCompletion:^{
+        [self sessionQuitRestart:NO];
+    }];
+}
+
+
+- (void) closeServerViewWithCompletion:(void (^)(void))completion
+{
+    if (_sebServerViewController) {
+        [_sebServerViewController dismissViewControllerAnimated:YES completion:^{
+            self.sebServerViewDisplayed = NO;
+            self.sebServerViewController = nil;
+            completion();
+        }];
+    } else {
+        completion();
+    }
+}
+
+
 - (void) serverSessionQuitRestart:(BOOL)restart
 {
+    self.establishingSEBServerConnection = NO;
     if (_sebServerViewDisplayed) {
         [self dismissViewControllerAnimated:YES completion:^{
-            self.sebServerViewDisplayed = false;
-            self.establishingSEBServerConnection = false;
+            self.sebServerViewDisplayed = NO;
             [self serverSessionQuitRestart:restart];
         }];
         return;
@@ -3701,13 +3821,24 @@ void run_on_ui_thread(dispatch_block_t block)
         } else if (self.appSettingsViewController) {
             [self.appSettingsViewController dismissViewControllerAnimated:YES completion:^{
                 self.appSettingsViewController = nil;
-                self.settingsOpen = false;
+                self.settingsOpen = NO;
                 [self serverSessionQuitRestart:restart];
             }];
             return;
         }
     }
     [self sessionQuitRestart:restart];
+}
+
+
+- (void) didCloseSEBServerConnectionRestart:(BOOL)restart
+{
+    _establishingSEBServerConnection = NO;
+    if (restart) {
+        [self restartExamQuitting:YES];
+    } else {
+        [self quitSEBOrSession];
+    }
 }
 
 
@@ -3742,6 +3873,30 @@ void run_on_ui_thread(dispatch_block_t block)
                 [self correctPasswordEntered];
             }
         }
+    }
+}
+
+
+- (void) shouldStartLoadFormSubmittedURL:(NSURL *)url
+{
+    if (_establishingSEBServerConnection) {
+        [self.serverController shouldStartLoadFormSubmittedURL:url];
+    }
+}
+
+
+- (void) examineCookies:(NSArray<NSHTTPCookie *>*)cookies forURL:(NSURL *)url
+{
+    if (_establishingSEBServerConnection) {
+        [self.serverController examineCookies:cookies forURL:url];
+    }
+}
+
+
+- (void) examineHeaders:(NSDictionary<NSString *,NSString *>*)headerFields forURL:(NSURL *)url
+{
+    if (_establishingSEBServerConnection) {
+        [self.serverController examineHeaders:headerFields forURL:url];
     }
 }
 
@@ -3815,7 +3970,7 @@ void run_on_ui_thread(dispatch_block_t block)
                 }];
                 
                 // Proceed to exam
-                [self startExam];
+                [self startExamWithFallback:NO];
                 
             } else {
                 
@@ -4110,7 +4265,7 @@ void run_on_ui_thread(dispatch_block_t block)
     if (!_secureMode) {
         DDLogInfo(@"%s Secure mode isn't required in settings (no quit pw), proceed to open start URL", __FUNCTION__);
         // If secure mode isn't required, we can proceed to opening start URL
-        [self startExam];
+        [self startExamWithFallback:NO];
     } else if (!_ASAMActive) {
         // Secure mode required, find out which kiosk mode to use
         // Is ASAM enabled in settings?
@@ -4143,7 +4298,7 @@ void run_on_ui_thread(dispatch_block_t block)
                         return;
                     }
                     DDLogInfo(@"%s: Entered AAC/Autonomous Single App Mode, proceed to open start URL", __FUNCTION__);
-                    [self startExam];
+                    [self startExamWithFallback:NO];
                 } else {
                     DDLogError(@"%s: Failed to enter AAC/Autonomous Single App Mode", __FUNCTION__);
                     self.ASAMActive = NO;
@@ -4228,10 +4383,8 @@ void run_on_ui_thread(dispatch_block_t block)
                                                          style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
         DDLogDebug(@"%s: User selected Cancel", __FUNCTION__);
         self.alertController = nil;
-        self.noSAMAlertDisplayed = false;
-        if (self.establishingSEBServerConnection) {
-            self.establishingSEBServerConnection = false;
-        }
+        self.noSAMAlertDisplayed = NO;
+        self.establishingSEBServerConnection = NO;
         // We didn't actually succeed to switch a kiosk mode on
         // self.secureMode = false;
         // removed because in this case the alert "Exam Session Finished" should be displayed if these are client settings
@@ -4272,7 +4425,7 @@ void run_on_ui_thread(dispatch_block_t block)
         DDLogInfo(@"%s: No quit password is defined, then we can initialize SEB with new settings, quit and restart the exam / reload the start page directly", __FUNCTION__);
         DDLogDebug(@"%s: [self initSEBWithCompletionBlock:^{[self startExam]; }];", __FUNCTION__);
         [self initSEBUIWithCompletionBlock:^{
-            [self startExam];
+            [self startExamWithFallback:NO];
         }];
     }
 }
@@ -4959,6 +5112,52 @@ void run_on_ui_thread(dispatch_block_t block)
         }]];
     }
     
+    [self.topMostController presentViewController:_alertController animated:NO completion:nil];
+}
+
+
+- (void) alertWithTitle:(NSString *)title
+                message:(NSString *)message
+         preferredStyle:(UIAlertControllerStyle)controllerStyle
+           action1Title:(NSString *)action1Title
+           action1Style:(UIAlertActionStyle)action1Style
+         action1Handler:(void (^)(void))action1Handler
+           action2Title:(NSString *)action2Title
+           action2Style:(UIAlertActionStyle)action2Style
+         action2Handler:(void (^)(void))action2Handler
+           action3Title:(NSString *)action3Title
+           action3Style:(UIAlertActionStyle)action3Style
+         action3Handler:(void (^)(void))action3Handler
+{
+    if (_alertController) {
+        [_alertController dismissViewControllerAnimated:NO completion:nil];
+    }
+    _alertController = [UIAlertController alertControllerWithTitle:title
+                                                           message:message
+                                                    preferredStyle:controllerStyle];
+    [_alertController addAction:[UIAlertAction actionWithTitle:action1Title
+                                                         style:action1Style
+                                                       handler:^(UIAlertAction *action) {
+        self.alertController = nil;
+        action1Handler();
+    }]];
+    if (action2Title) {
+        [_alertController addAction:[UIAlertAction actionWithTitle:action2Title
+                                                             style:action2Style
+                                                           handler:^(UIAlertAction *action) {
+            self.alertController = nil;
+            action2Handler();
+        }]];
+    }
+    if (action3Title) {
+        [_alertController addAction:[UIAlertAction actionWithTitle:action3Title
+                                                             style:action3Style
+                                                           handler:^(UIAlertAction *action) {
+            self.alertController = nil;
+            action3Handler();
+        }]];
+    }
+
     [self.topMostController presentViewController:_alertController animated:NO completion:nil];
 }
 

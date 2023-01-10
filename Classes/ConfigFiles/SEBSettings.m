@@ -148,6 +148,9 @@ static SEBSettings *sharedSEBSettings = nil;
     return  @{@"rootSettings" :
                   [NSDictionary dictionaryWithObjectsAndKeys:
                    
+                   @NO,
+                   @"aacDnsPrePinning",
+                   
                    [NSArray array],
                    @"additionalResources",
                    
@@ -199,10 +202,10 @@ static SEBSettings *sharedSEBSettings = nil;
                    [NSNumber numberWithLong:iOSVersion11],
                    @"allowiOSVersionNumberMajor",
                    
-                   @3,
+                   @0,
                    @"allowiOSVersionNumberMinor",
                    
-                   @5,
+                   @0,
                    @"allowiOSVersionNumberPatch",
                    
                    @NO,
@@ -280,10 +283,10 @@ static SEBSettings *sharedSEBSettings = nil;
                    @YES,
                    @"browserMediaAutoplayVideo",
                    
-                   @YES,
+                   @NO,
                    @"browserMediaCaptureCamera", //setting for WebRTC camera capture
                    
-                   @YES,
+                   @NO,
                    @"browserMediaCaptureMicrophone", //setting for WebRTC microphone capture
                    
                    @NO,
@@ -664,9 +667,6 @@ static SEBSettings *sharedSEBSettings = nil;
                    [NSNumber numberWithLong:SEBMinOSX10_11],
                    @"minMacOSVersion",
                    
-                   @0,
-                   @"minMacOSVersionNumberMinor",
-                   
                    @YES,
                    @"mobileAllowInlineMediaPlayback",
                    
@@ -871,6 +871,18 @@ static SEBSettings *sharedSEBSettings = nil;
                    @NO,
                    @"sebServerFallback",
                    
+                   [NSNumber numberWithLong:2000],
+                   @"sebServerFallbackAttemptInterval",
+
+                   [NSNumber numberWithLong:5],
+                   @"sebServerFallbackAttempts",
+
+                   @"",
+                   @"sebServerFallbackPasswordHash",
+                   
+                   [NSNumber numberWithLong:SEBServerDefaultFallbackTimeout],
+                   @"sebServerFallbackTimeout",
+
                    @"",
                    @"sebServerURL",
                    
@@ -1142,7 +1154,7 @@ static SEBSettings *sharedSEBSettings = nil;
                       @"clientName" : @"",
                       @"clientSecret" : @"",
                       @"apiDiscovery" : @"",
-                      @"pingInterval" : @1000
+                      @"pingInterval" : [NSNumber numberWithLong:SEBServerDefaultPingInterval]
                       }
               
               };

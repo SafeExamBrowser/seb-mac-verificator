@@ -37,14 +37,20 @@
 @implementation ServerController
 
 
-- (BOOL) connectToServer:(NSURL *)url withConfiguration:(NSDictionary *)sebServerConfiguration
+- (NSError *) connectToServer:(NSURL *)url withConfiguration:(NSDictionary *)sebServerConfiguration
 {
+    NSError *error = nil;
     NSString *institution =  [sebServerConfiguration valueForKey:@"institution"];
     NSString *exam = [sebServerConfiguration valueForKey:@"exam"];
     NSString *username =  [sebServerConfiguration valueForKey:@"clientName"];
     NSString *password =  [sebServerConfiguration valueForKey:@"clientSecret"];
     NSString *discoveryAPIEndpoint = [sebServerConfiguration valueForKey:@"apiDiscovery"];
-    double pingInterval = [[sebServerConfiguration valueForKey:@"pingInterval"] doubleValue] / 1000;
+    double pingInterval = [[sebServerConfiguration valueForKey:@"pingInterval"] doubleValue];
+    if (pingInterval <= 0) {
+        pingInterval = SEBServerDefaultPingInterval;
+    }
+    pingInterval = pingInterval / 1000;
+    
     if (url && institution && username && password && discoveryAPIEndpoint)
     {
         _sebServerController = [[SEBServerController alloc] initWithBaseURL:url
@@ -60,16 +66,34 @@
         _sebServerController.sebVersion = MyGlobals.versionString;
         _sebServerController.machineName = MyGlobals.computerName;
         [_sebServerController getServerAPI];
-        return YES;
+    } else {
+        error = [[NSError alloc] initWithDomain:sebErrorDomain
+                                           code:SEBErrorConnectionSettingsInvalid
+                                       userInfo:@{NSLocalizedDescriptionKey : NSLocalizedString(@"Missing Connection Settings", comment: ""),
+                                                  NSLocalizedRecoverySuggestionErrorKey : NSLocalizedString(@"Check your server connection configuration.", comment: ""),
+                                                  NSDebugDescriptionErrorKey : @"Cannot connect to SEB Server. Some connection settings are missing."}];
     }
-    return NO;
+    return error;
+}
+
+
+- (BOOL) fallbackEnabled
+{
+    NSUserDefaults *preferences = [NSUserDefaults standardUserDefaults];
+    return [preferences secureBoolForKey:@"org_safeexambrowser_SEB_sebServerFallback"];
+}
+
+
+- (void) closeServerViewWithCompletion:(void (^)(void))completion
+{
+    [self.delegate closeServerViewWithCompletion:completion];
 }
 
 
 - (void) reconfigureWithServerExamConfig: (NSData *)configData
 {
     DDLogInfo(@"ServerController: Reconfigure with server exam config");
-    [self.delegate storeNewSEBSettings:configData];
+    [self.delegate storeNewSEBSettingsFromServer:configData];
 }
 
 
@@ -264,5 +288,11 @@
     [self.delegate didCloseSEBServerConnectionRestart:restart];
 }
 
+
+- (void) didFailWithError:(NSError *)error fatal:(BOOL)fatal
+{
+    DDLogInfo(@"ServerController: SEB Server connection did fail");
+    [self.delegate didFailWithError:error fatal:fatal];
+}
 
 @end

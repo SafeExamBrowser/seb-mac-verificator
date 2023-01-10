@@ -311,7 +311,12 @@
     NSString *httpMethod = request.HTTPMethod;
     NSDictionary<NSString *,NSString *> *allHTTPHeaderFields = request.allHTTPHeaderFields;
     DDLogDebug(@"HTTP method for URL %@: %@", url, httpMethod);
-    DDLogDebug(@"All HTTP header fields for URL %@: %@", url, allHTTPHeaderFields);
+//    DDLogDebug(@"All HTTP header fields for URL %@: %@", url, allHTTPHeaderFields);
+    if (url) {
+        [self.navigationDelegate examineHeaders:allHTTPHeaderFields forURL:url];
+        NSArray<NSHTTPCookie *> *cookies = NSHTTPCookieStorage.sharedHTTPCookieStorage.cookies;
+        [self.navigationDelegate examineCookies:cookies forURL:url];
+    }
 
     if ([url.scheme isEqualToString:@"newtab"]) {
         NSString *urlString = [[url resourceSpecifier] stringByRemovingPercentEncoding];
@@ -360,7 +365,8 @@
         }
     }
 
-    SEBNavigationActionPolicy navigationActionPolicy = [self.navigationDelegate decidePolicyForNavigationAction:navigationAction newTab:newTabRequested];
+    SEBNavigationAction *delegateNavigationAction = [self.navigationDelegate decidePolicyForNavigationAction:navigationAction newTab:newTabRequested configuration:nil];
+    SEBNavigationActionPolicy navigationActionPolicy = delegateNavigationAction.policy;
     if (navigationActionPolicy == SEBNavigationActionPolicyAllow) {
         return YES;
     } else {

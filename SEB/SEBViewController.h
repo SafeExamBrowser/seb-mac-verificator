@@ -150,6 +150,8 @@
     BOOL assureSAMNotActiveWaiting;
 }
 
+void run_on_ui_thread(dispatch_block_t block);
+
 @property (weak, nonatomic) AppDelegate *appDelegate;
 @property (weak) IBOutlet UIView *containerView;
 @property (weak, nonatomic) IBOutlet NSLayoutConstraint *containerTopContraint;
@@ -199,6 +201,8 @@
 @property (strong, nonatomic) SEBServerViewController *sebServerViewController;
 
 /// Remote Proctoring
+#define JitsiMeetProctoringSupported YES
+#define ZoomProctoringSupported NO
 @property (strong, nonatomic) JitsiViewController *jitsiViewController;
 @property (strong, nonatomic) ProctoringImageAnalyzer *proctoringImageAnalyzer API_AVAILABLE(ios(11));
 @property (readwrite) UIInterfaceOrientation userInterfaceOrientation;
@@ -314,7 +318,6 @@
 - (void) resetSEB;
 
 #pragma mark - Start and quit exam session
-- (void) startExam;
 - (void) quitExamConditionally;
 - (void) sessionQuitRestart:(BOOL)restart;
 - (void) quitExamWithCallback:(id)callback selector:(SEL)selector;
@@ -330,7 +333,7 @@
 @property(readwrite) BOOL sebServerViewDisplayed;
 
 - (void) didSelectExamWithExamId:(NSString *)examId url:(NSString *)url;
-- (void) closeServerView:(id)sender;
+- (void) closeServerViewAndRestart:(id)sender;
 - (void) loginToExam:(NSString *)url;
 - (void) examineCookies:(NSArray<NSHTTPCookie *>*)cookies forURL:(NSURL *)url;
 - (void) examineHeaders:(NSDictionary<NSString *,NSString *>*)headerFields forURL:(NSURL *)url;
@@ -356,7 +359,7 @@
 - (SEBAbstractWebView *) openTempWebViewForDownloadingConfigFromURL:(NSURL *)url originalURL:originalURL;
 
 - (void) storeSEBSettingsDownloadedDirectlySuccessful:(NSError *)error;
-- (void) storeNewSEBSettings:(NSData *)sebData;
+- (void) storeNewSEBSettingsFromServer:(NSData *)sebData;
 - (void) storeNewSEBSettingsSuccessful:(NSError *)error;
 
 #pragma mark - Toolbar (UINavigationBar)
@@ -407,6 +410,19 @@
            action2Title:(NSString *)action2Title
            action2Style:(UIAlertActionStyle)action2Style
          action2Handler:(void (^)(void))action2Handler;
+
+- (void) alertWithTitle:(NSString *)title
+                message:(NSString *)message
+         preferredStyle:(UIAlertControllerStyle)controllerStyle
+           action1Title:(NSString *)action1Title
+           action1Style:(UIAlertActionStyle)action1Style
+         action1Handler:(void (^)(void))action1Handler
+           action2Title:(NSString *)action2Title
+           action2Style:(UIAlertActionStyle)action2Style
+         action2Handler:(void (^)(void))action2Handler
+           action3Title:(NSString *)action3Title
+           action3Style:(UIAlertActionStyle)action3Style
+         action3Handler:(void (^)(void))action32Handler;
 
 // Delegate method to display an enter password dialog with the
 // passed message text asynchronously, calling the callback

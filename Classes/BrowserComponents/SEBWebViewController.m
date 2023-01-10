@@ -10,6 +10,7 @@
 #include "WebStorageManagerPrivate.h"
 #include "WebPreferencesPrivate.h"
 #import "WebPluginDatabase.h"
+#import "SEBAbstractClassicWebView.h"
 
 @implementation SEBWebViewController
 
@@ -388,8 +389,9 @@
 }
 
 - (SEBAbstractWebView *) openNewTabWithURL:(NSURL *)url
+                             configuration:(nullable WKWebViewConfiguration *)configuration
 {
-    return [self.navigationDelegate openNewTabWithURL:url];
+    return [self.navigationDelegate openNewTabWithURL:url configuration:configuration];
 }
 
 - (void) examineCookies:(NSArray<NSHTTPCookie *>*)cookies forURL:(NSURL *)url
@@ -455,6 +457,20 @@
             // request to open link in new window came from the flash plugin context menu while playing video in full screen mode
             DDLogDebug(@"Cancel opening link from Flash plugin context menu");
             return nil; // cancel opening link
+        }
+        if (newBrowserWindowPolicy == openInNewWindow) {
+            SEBWKNavigationAction *sebWKNavigationAction = [SEBWKNavigationAction new];
+            sebWKNavigationAction.writableNavigationType = WKNavigationTypeLinkActivated;
+            
+            SEBNavigationAction *navigationAction = [self.navigationDelegate decidePolicyForNavigationAction:sebWKNavigationAction newTab:YES configuration:nil];
+            if (navigationAction.policy == SEBNavigationActionPolicyJSOpen) {
+                SEBAbstractWebView *newAbstractWebView = navigationAction.openedWebView;
+                DDLogInfo(@"Opening classic WebView after Javascript .open()");
+                SEBAbstractClassicWebView <SEBAbstractBrowserControllerDelegate> *sebAbstractClassicWebView = [[SEBAbstractClassicWebView alloc] initWithDelegate:newAbstractWebView];
+                newAbstractWebView.browserControllerDelegate = sebAbstractClassicWebView;
+                [newAbstractWebView initGeneralProperties];
+                return newAbstractWebView.nativeWebView;
+            }
         }
         SEBWebView *tempWebView = [[SEBWebView alloc] init];
         DDLogDebug(@"Opened new temporary WebView: %@", tempWebView);
@@ -918,11 +934,11 @@ decisionListener:(id <WebPolicyDecisionListener>)listener {
             NSDictionary *webElementDict = [actionInformation valueForKey:@"WebActionElementKey"];
             if (webElementDict) {
     #ifdef DEBUG
-                DDLogDebug(@"DOMNode *webElementDOMNode = [webElementDict valueForKey:@\"WebElementDOMNode\"];");
+                DDLogVerbose(@"DOMNode *webElementDOMNode = [webElementDict valueForKey:@\"WebElementDOMNode\"];");
     #endif
                 DOMNode *webElementDOMNode = [webElementDict valueForKey:@"WebElementDOMNode"];
     #ifdef DEBUG
-                DDLogDebug(@"Successfully got webElementDOMNode");
+                DDLogVerbose(@"Successfully got webElementDOMNode");
     #endif
 
                 // Do we have a parentNode?
@@ -930,19 +946,19 @@ decisionListener:(id <WebPolicyDecisionListener>)listener {
                     
                     // Is the parent an anchor?
     #ifdef DEBUG
-                    DDLogDebug(@"DOMHTMLAnchorElement *parentNode = (DOMHTMLAnchorElement *)webElementDOMNode.parentNode;");
+                    DDLogVerbose(@"DOMHTMLAnchorElement *parentNode = (DOMHTMLAnchorElement *)webElementDOMNode.parentNode;");
     #endif
                     DOMHTMLAnchorElement *parentNode = (DOMHTMLAnchorElement *)webElementDOMNode.parentNode;
     #ifdef DEBUG
-                    DDLogDebug(@"Successfully got webElementDOMNode.parentNode");
+                    DDLogVerbose(@"Successfully got webElementDOMNode.parentNode");
     #endif
                     if ([parentNode respondsToSelector:@selector(nodeName)]) {
     #ifdef DEBUG
-                        DDLogDebug(@"if ([parentNode.nodeName isEqualToString:@\"A\"]) {");
+                        DDLogVerbose(@"if ([parentNode.nodeName isEqualToString:@\"A\"]) {");
     #endif
                         if ([parentNode.nodeName isEqualToString:@"A"]) {
     #ifdef DEBUG
-                            DDLogDebug(@"Successfully compared parentNode.nodeName to A");
+                            DDLogVerbose(@"Successfully compared parentNode.nodeName to A");
     #endif
                             self.downloadFilename = [self getFilenameFromHTMLAnchorElement:parentNode];
                         }
@@ -953,28 +969,28 @@ decisionListener:(id <WebPolicyDecisionListener>)listener {
                         // We had to check if we get children, bad formatted HTML and
                         // older WebKit versions would throw an exception here
     #ifdef DEBUG
-                        DDLogDebug(@"DOMHTMLCollection *childrenNodes = parentNode.children;");
+                        DDLogVerbose(@"DOMHTMLCollection *childrenNodes = parentNode.children;");
     #endif
                         DOMHTMLCollection *childrenNodes = parentNode.children;
     #ifdef DEBUG
-                        DDLogDebug(@"Successfully got childrenNodes = parentNode.children");
+                        DDLogVerbose(@"Successfully got childrenNodes = parentNode.children");
     #endif
                         uint i;
                         for (i = 0; i < childrenNodes.length; i++) {
     #ifdef DEBUG
-                            DDLogDebug(@"DOMHTMLAnchorElement *childNode = (DOMHTMLAnchorElement *)[childrenNodes item:i];");
+                            DDLogVerbose(@"DOMHTMLAnchorElement *childNode = (DOMHTMLAnchorElement *)[childrenNodes item:i];");
     #endif
                             DOMHTMLAnchorElement *childNode = (DOMHTMLAnchorElement *)[childrenNodes item:i];
     #ifdef DEBUG
-                            DDLogDebug(@"Successfully got childNode");
+                            DDLogVerbose(@"Successfully got childNode");
     #endif
                             if ([childNode respondsToSelector:@selector(nodeName)]) {
     #ifdef DEBUG
-                                DDLogDebug(@"if ([childNode.nodeName isEqualToString:@\"A\"]) {");
+                                DDLogVerbose(@"if ([childNode.nodeName isEqualToString:@\"A\"]) {");
     #endif
                                 if ([childNode.nodeName isEqualToString:@"A"]) {
     #ifdef DEBUG
-                                    DDLogDebug(@"Successfully got childNode.nodeName");
+                                    DDLogVerbose(@"Successfully got childNode.nodeName");
     #endif
                                     self.downloadFilename = [self getFilenameFromHTMLAnchorElement:childNode];
                                     break;
@@ -986,10 +1002,13 @@ decisionListener:(id <WebPolicyDecisionListener>)listener {
             }
         }
         SEBNavigationActionPolicy delegateNavigationActionPolicy;
+        SEBNavigationAction *delegateNavigationAction;
         if (!_allowDownloads && self.downloadFilename && (self.downloadFilename.pathExtension && [self.downloadFilename.pathExtension caseInsensitiveCompare:filenameExtensionPDF] == NSOrderedSame)) {
-            delegateNavigationActionPolicy = [self.navigationDelegate decidePolicyForNavigationAction:navigationAction newTab:YES];
+            delegateNavigationAction = [self.navigationDelegate decidePolicyForNavigationAction:navigationAction newTab:YES configuration:nil];
+            delegateNavigationActionPolicy = delegateNavigationAction.policy;
         } else {
-            delegateNavigationActionPolicy = [self.navigationDelegate decidePolicyForNavigationAction:navigationAction newTab:NO];
+            delegateNavigationAction = [self.navigationDelegate decidePolicyForNavigationAction:navigationAction newTab:NO configuration:nil];
+            delegateNavigationActionPolicy = delegateNavigationAction.policy;
         }
     #ifdef DEBUG
         DDLogDebug(@"%s: [self.navigationDelegate decidePolicyForNavigationAction:navigationAction newTab:NO] = (SEBNavigationActionPolicy) %lu", __FUNCTION__, (unsigned long)delegateNavigationActionPolicy);
@@ -1029,7 +1048,7 @@ decisionListener:(id <WebPolicyDecisionListener>)listener {
                 // If the request's sender is the temporary webview
                 
                 if (sender.creatingWebView && newBrowserWindowPolicy == openInNewWindow) {
-                    SEBAbstractWebView *newWindowAbstractWebView = [self.navigationDelegate openNewWebViewWindowWithURL:request.URL];
+                    SEBAbstractWebView *newWindowAbstractWebView = [self.navigationDelegate openNewWebViewWindowWithURL:request.URL configuration:nil];
                     newWindowAbstractWebView.creatingWebView = self.navigationDelegate.abstractWebView;
                     DDLogDebug(@"Just opened new document browser window with SEBAbstractWebView %@", newWindowAbstractWebView);
                     [listener ignore];
@@ -1065,7 +1084,7 @@ decisionListener:(id <WebPolicyDecisionListener>)listener
     SEBWKNavigationAction *navigationAction = [self navigationActionForActionInformation:actionInformation];
     navigationAction.writableRequest = request;
 
-    [self.navigationDelegate decidePolicyForNavigationAction:navigationAction newTab:YES];
+    [self.navigationDelegate decidePolicyForNavigationAction:navigationAction newTab:YES configuration:nil];
 
     [listener ignore];
 }

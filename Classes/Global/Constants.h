@@ -41,7 +41,6 @@
 
 #define sebConfigFilePrefixLength               4
 #define publicKeyHashLenght                     20
-#define kMenuBarHeight                          22.0
 #define kMenuBarNotificationCenterIconWidth     46.0
 
 
@@ -79,7 +78,12 @@
 #define SEBErrorParsingSettingsSerializingFailed 205
 #define SEBErrorOpeningUniversalLinkFailed 300
 
-#define currentStableMajoriOSVersion 15
+#define SEBServerDefaultPingInterval 1000
+#define SEBServerDefaultFallbackTimeout 30000
+#define SEBErrorConnectionSettingsInvalid 400
+#define SEBErrorGettingConnectionTokenFailed 401
+
+#define currentStableMajoriOSVersion 16
 
 #define WebViewDefaultTextSize 120.0
 #define WebViewDefaultTextZoom 1.0
@@ -204,7 +208,9 @@ enum {
     iOSVersion11                                = 11,
     iOSVersion12                                = 12,
     iOSVersion13                                = 13,
-    iOSVersion14                                = 14
+    iOSVersion14                                = 14,
+    iOSVersion15                                = 15,
+    iOSVersion16                                = 16
 };
 typedef NSUInteger iOSVersion;
 
@@ -274,7 +280,8 @@ typedef NSUInteger newBrowserWindowPolicies;
 enum {
     SEBNavigationActionPolicyCancel             = 0,
     SEBNavigationActionPolicyAllow              = 1,
-    SEBNavigationActionPolicyDownload           = 2
+    SEBNavigationActionPolicyDownload           = 2,
+    SEBNavigationActionPolicyJSOpen             = 3
 };
 typedef NSInteger SEBNavigationActionPolicy;
 
@@ -458,7 +465,8 @@ enum {
     SEBMinMacOS10_14                            = 7,
     SEBMinMacOS10_15                            = 8,
     SEBMinMacOS11                               = 9,
-    SEBMinMacOS12                               = 10
+    SEBMinMacOS12                               = 10,
+    SEBMinMacOS13                               = 11
 };
 typedef NSUInteger SEBMinMacOSVersion;
 
@@ -524,7 +532,8 @@ static NSString __unused *TouchBarFnDefaultsKey = @"fullControlStrip";
 static NSString __unused *TouchBarFnDefaultsValue = @"functionKeys";
 static NSString __unused *BTouchBarAgent = @"BetterTouchTool";
 static NSString __unused *BTouchBarRestartAgent = @"BTTRelaunch";
-static NSString __unused *WebKitNetworkingProcess = @"com.apple.WebKit.Networking";
+static NSString __unused *WebKitNetworkingProcessBundleID = @"com.apple.WebKit.Networking";
+static NSString __unused *UniversalControlBundleID = @"com.apple.universalcontrol";
 static NSString __unused *cachedTouchBarGlobalSettingsKey = @"cachedTouchBarGlobalSettingsKey";
 static NSString __unused *cachedTouchBarFnDictionarySettingsKey = @"cachedTouchBarFnDictionarySettingsKey";
 static NSString __unused *systemPreferencesBundleID = @"com.apple.systempreferences";

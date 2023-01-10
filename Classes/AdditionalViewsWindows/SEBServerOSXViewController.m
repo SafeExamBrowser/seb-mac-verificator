@@ -8,16 +8,15 @@
 #import "SEBServerOSXViewController.h"
 
 @interface SEBServerOSXViewController ()
+{
+    NSString *serverStatusString;
+    NSString *fullServerStatusString;
+    NSUInteger retries;
+}
 
 @end
 
 @implementation SEBServerOSXViewController
-
-
-//- (void)loadView
-//{
-//
-//}
 
 
 - (void)viewDidLoad {
@@ -31,6 +30,7 @@
     NSTableColumn * column1 = [[NSTableColumn alloc] initWithIdentifier:@"Column1"];
     [column1 setWidth:444];
     [column1.headerCell setStringValue:[self titleForHeader]];
+    column1.editable = NO;
 
     [self.examsTableView addTableColumn:column1];
     self.examsTableView.dataSource = self;
@@ -49,12 +49,33 @@
 }
 
 
+- (void)updateStatusWithString:(NSString *)string append:(BOOL)append
+{
+    if (append) {
+        if ([fullServerStatusString containsString:string]) {
+            retries ++;
+            fullServerStatusString = [NSString stringWithFormat:@"%@ %@ (%lu)", serverStatusString, string, retries+1];
+        } else {
+            fullServerStatusString = [serverStatusString stringByAppendingFormat:@" %@", string];
+        }
+    } else {
+        serverStatusString = string;
+        fullServerStatusString = serverStatusString;
+        retries = 0;
+    }
+    [self.examsTableView reloadData];
+}
+
+
 - (NSString *)titleForHeader
 {
-    if (_sebServerController.examList.count > 0) {
+    if (fullServerStatusString) {
+        return fullServerStatusString;
+    } else if (_sebServerController.examList.count > 0) {
         return NSLocalizedString(@"Select Exam", @"'Select Exam' header in 'Connecting to SEB Server' table view.");
+    } else {
+        return NSLocalizedString(@"Connecting…", @"'Connecting…' header in 'Connecting to SEB Server' table view.");
     }
-    return NSLocalizedString(@"Connecting…", @"'Connecting…' header in 'Connecting to SEB Server' table view.");
 }
 
 
@@ -81,10 +102,12 @@
 {
     NSInteger row = _examsTableView.selectedRow;
 //    [_examsTableView deselectAll:self];
-    ExamObject *exam = _sebServerController.examList[row];
-    NSString *examId = exam.examId;
-    NSString *examURL = exam.url;
-    [self.serverControllerDelegate didSelectExamWithExamId:examId url:examURL];
+    if (row >= 0 && row < _sebServerController.examList.count) {
+        ExamObject *exam = _sebServerController.examList[row];
+        NSString *examId = exam.examId;
+        NSString *examURL = exam.url;
+        [self.serverControllerDelegate didSelectExamWithExamId:examId url:examURL];
+    }
 }
 
 
@@ -92,7 +115,7 @@
 
 - (BOOL)windowShouldClose:(NSWindow *)sender
 {
-    [_serverControllerDelegate closeServerView:sender];
+    [_serverControllerDelegate closeServerViewAndRestart:sender];
     return YES;
 }
 

@@ -43,7 +43,7 @@
                       },
                       @{
                           @"executable" : @"Universal Control",
-                          @"identifier" : @"com.apple.universalcontrol",
+                          @"identifier" : UniversalControlBundleID,
                           @"strongKill" : @YES,
                       },
                       @{
@@ -91,6 +91,10 @@
                           @"identifier" : @"com.TeamViewer.TeamViewer",
                       },
                       @{
+                          @"executable" : @"TeamViewer",
+                          @"identifier" : @"com.teamviewer.TeamViewer",
+                      },
+                      @{
                           @"executable" : @"vncserver",
                           @"description" : @"The user will have to deactivate/uninstall RealVNC server to use SEB.",
                       },
@@ -122,7 +126,7 @@
                       @{
                           @"description" : @"This stops video conferencing and screen sharing, without having to quit the browser.",
                           @"executable" : @"Safari/WebKit Networking",
-                          @"identifier" : WebKitNetworkingProcess,
+                          @"identifier" : WebKitNetworkingProcessBundleID,
                           @"strongKill" : @YES,
                       },
                       @{

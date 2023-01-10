@@ -73,6 +73,8 @@
 #import "SEBServerOSXViewController.h"
 #import "ServerLogger.h"
 
+#import "SEBZoomController.h"
+
 @class PreferencesController;
 @class SEBOSXConfigFileController;
 @class SEBSystemManager;
@@ -84,6 +86,7 @@
 @class ServerController;
 @class SEBServerOSXViewController;
 @class SEBBatteryController;
+@class SEBZoomController;
 
 
 @interface SEBController : NSObject <NSApplicationDelegate, SEBLockedViewControllerDelegate, ProcessListViewControllerDelegate, AssessmentModeDelegate, ServerControllerDelegate, ServerLoggerDelegate, SEBDockItemButtonDelegate>
@@ -193,7 +196,7 @@
 @property(readwrite) BOOL establishingSEBServerConnection;
 // Exam URL is opened in a webview (tab), waiting for user to log in
 @property(readwrite) BOOL startingExamFromSEBServer;
-// User logged in to LMS, monitoring the client started
+// User logged in to LMS, monitored client is fully identified now
 @property(readwrite) BOOL sebServerConnectionEstablished;
 // The SEB Server exam list view is displayed
 @property(readwrite) BOOL sebServerViewDisplayed;
@@ -206,6 +209,8 @@
 /// Remote Proctoring
 #define JitsiMeetProctoringSupported NO
 #define ZoomProctoringSupported NO
+@property (strong, nonatomic) SEBZoomController *zoomController;
+
 @property(readwrite) BOOL previousSessionZoomEnabled;
 
 @property(readwrite) BOOL zoomReceiveAudio;
@@ -243,6 +248,7 @@
 @property(readwrite) BOOL allowSwitchToApplications;
 
 @property(readwrite) BOOL reOpenedExamDetected;
+@property(readwrite) BOOL userSwitchDetected;
 @property(readwrite) BOOL screenSharingDetected;
 @property(readwrite) BOOL screenSharingCheckOverride;
 @property(readwrite) BOOL processesDetected;
@@ -292,7 +298,7 @@
 
 @property(strong, nonatomic) NSMutableArray *systemProcessPIDs;
 @property(strong, nonatomic) NSMutableArray *runningProhibitedProcesses;
-@property(strong, nonatomic) NSMutableArray *terminatedProcessesExecutableURLs;
+@property(strong, nonatomic) NSMutableSet *terminatedProcessesExecutableURLs;
 @property(strong, nonatomic) NSMutableArray *overriddenProhibitedProcesses;
 
 @property(strong, nonatomic) SEBDockItemButton *dockButtonReload;
@@ -328,10 +334,10 @@ conditionallyForWindow:(NSWindow *)window
 
 - (NSRect) visibleFrameForScreen:(NSScreen *)screen;
 
-- (NSInteger) showEnterPasswordDialog:(NSString *)text
+- (NSModalResponse) showEnterPasswordDialog:(NSString *)text
                        modalForWindow:(NSWindow *)window
                           windowTitle:(NSString *)title;
-- (NSInteger) showEnterPasswordDialogAttributedText:(NSAttributedString *)text
+- (NSModalResponse) showEnterPasswordDialogAttributedText:(NSAttributedString *)text
                                      modalForWindow:(NSWindow *)window
                                         windowTitle:(NSString *)title;
 
@@ -352,7 +358,8 @@ conditionallyForWindow:(NSWindow *)window
 - (IBAction) showAbout:(id)sender;
 - (IBAction) showHelp:(id)sender;
 
-- (void) reloadButtonEnabled:(BOOL)enabled;
+@property(readwrite, nonatomic) BOOL reloadButtonEnabled;
+@property(strong, nonatomic) ReloadPageUIElement *reloadPageUIElement;
 
 - (IBAction) searchText:(id)sender;
 - (IBAction) searchTextNext:(id)sender;

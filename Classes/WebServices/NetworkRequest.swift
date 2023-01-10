@@ -32,20 +32,16 @@
 //
 
 import Foundation
-//import UIKit
 
 protocol NetworkRequest: AnyObject {
 	associatedtype Model
-	func load(withCompletion completion: @escaping (Model?) -> Void)
+	func load(_ session: URLSession, withCompletion completion: @escaping (Model?) -> Void)
 	func decode(_ data: Data) -> Model?
 }
 
 extension NetworkRequest {
-	fileprivate func load(_ url: URL, withCompletion completion: @escaping (Model?) -> Void) {
-		let configuration = URLSessionConfiguration.ephemeral
-		let session = URLSession(configuration: configuration, delegate: nil, delegateQueue: OperationQueue.main)
+    fileprivate func load(_ url: URL, session: URLSession, withCompletion completion: @escaping (Model?) -> Void) {
 		let task = session.dataTask(with: url, completionHandler: { [weak self] (data: Data?, response: URLResponse?, error: Error?) -> Void in
-//            print(data as Any)
 			guard let receivedData = data else {
 				completion(nil)
 				return
@@ -57,42 +53,87 @@ extension NetworkRequest {
 }
 
 extension NetworkRequest {
-    fileprivate func load(_ url: URL, httpMethod: String, body: String, headers: [AnyHashable: Any]?, withCompletion completion: @escaping ((Model?), Int?, [AnyHashable: Any]?) -> Void) {
-        let configuration = URLSessionConfiguration.ephemeral
+    fileprivate func load(_ url: URL, httpMethod: String, body: String, headers: [AnyHashable: Any]?, session: URLSession, attempt: Int, withCompletion completion: @escaping ((Model?), Int?, ErrorResponse?, [AnyHashable: Any]?, Int) -> Void) {
         
         let request = NSMutableURLRequest(url: url)
         request.httpMethod = httpMethod
+        request.addValue(keys.acceptJSON, forHTTPHeaderField: keys.headerAccept)
         if let additionalHeaders = headers {
             for header in additionalHeaders {
-                request.addValue(header.value as! String, forHTTPHeaderField: header.key as! String)
+                request.addValue(header.value as? String ?? "", forHTTPHeaderField: header.key as? String ?? "")
             }
         }
-        request.httpBody = body.data(using: .utf8)!
-
-        let session = URLSession(configuration: configuration, delegate: nil, delegateQueue: OperationQueue.main)
+        request.httpBody = body.data(using: .utf8)
+        let currentAttempt = attempt+1
+        
         let task = session.dataTask(with: request as URLRequest, completionHandler: { [weak self] (data: Data?, response: URLResponse?, error: Error?) -> Void in
-//            print(data as Any)
-//            if (data != nil) {
-//                print(String(decoding: data!, as: UTF8.self))
-//            }
-//            print(response as Any)
             let httpResponse = response as? HTTPURLResponse
             let statusCode = httpResponse?.statusCode
+            var errorResponse: ErrorResponse? = nil
             let responseHeaders = httpResponse?.allHeaderFields
-//            print(error as Any)
+            if error != nil {
+                DDLogError("URLSession.dataTask returned error: \(String(describing: error))")
+            }
             guard let receivedData = data else {
-                completion(nil, statusCode, [:])
+                DDLogError("Network Request didn't return response data (status code: \(String(describing: statusCode)))")
+                completion(nil, statusCode, nil, [:], currentAttempt)
                 return
             }
-            completion(self?.decode(receivedData), statusCode, responseHeaders)
+            if statusCode == nil || statusCode ?? 0 >= statusCodes.notSuccessfullRange {
+                // Some error happened
+                if statusCode == statusCodes.unauthorized {
+                    if let unauthorizedErrorResponse = self?.decodeErrorResponse(receivedData) {
+                        errorResponse = unauthorizedErrorResponse
+                    }
+                } else if statusCode == statusCodes.internalServerError {
+                    if let internalServerErrorResponse = self?.decodeServerErrorResponse(receivedData) {
+                        errorResponse = internalServerErrorResponse
+                    }
+                } else if (data != nil) {
+                    let errorObjectString = String(decoding: data!, as: UTF8.self)
+                    errorResponse = ErrorResponse(error: "Network Request load returned unspecified error object", error_description: errorObjectString)
+                    DDLogError("\(errorResponse?.error ?? ""): \(errorResponse?.error_description ?? "Unspecified"))")
+                } else {
+                    DDLogError("Network Request load returned unspecified error.")
+                }
+                completion(nil, statusCode, errorResponse, [:], currentAttempt)
+                return
+            }
+
+            completion(self?.decode(receivedData), statusCode, errorResponse, responseHeaders, currentAttempt)
         })
         task.resume()
+    }
+    
+    fileprivate func decodeErrorResponse(_ data: Data) -> ErrorResponse? {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .secondsSince1970
+        do {
+            return try decoder.decode(ErrorResponse.self, from: data)
+        } catch let error {
+            return ErrorResponse(error: "\(NSLocalizedString("decoding error: ", comment: "") + error.localizedDescription)", error_description: String(describing: error))
+        }
+    }
+
+    fileprivate func decodeServerErrorResponse(_ data: Data) -> ErrorResponse? {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .secondsSince1970
+        do {
+            let serverErrorResponse = try decoder.decode(ServerErrorResponse.self, from: data)
+            if serverErrorResponse.systemMessage != errors.generic {
+                return ErrorResponse(error: serverErrorResponse.systemMessage, error_description: serverErrorResponse.details)
+            } else {
+                return ErrorResponse(error: serverErrorResponse.details, error_description: nil)
+            }
+        } catch let error {
+            return ErrorResponse(error: "\(NSLocalizedString("decoding error: ", comment: "") + error.localizedDescription)", error_description: String(describing: error))
+        }
     }
 }
 
 class ApiRequest<Resource: ApiResource> {
 	let resource: Resource
-	
+    
 	init(resource: Resource) {
 		self.resource = resource
 	}
@@ -103,12 +144,12 @@ extension ApiRequest: NetworkRequest {
 		return resource.makeModel(data: data)
 	}
 	
-	func load(withCompletion completion: @escaping (Resource.Model?) -> Void) {
-		load(resource.url, withCompletion: completion)
+	func load(_ session: URLSession, withCompletion completion: @escaping (Resource.Model?) -> Void) {
+        load(resource.url, session: session, withCompletion: completion)
 	}
 
-    func load(httpMethod: String, body: String, headers: [AnyHashable: Any]?, completion: @escaping ((Resource.Model?), Int?, [AnyHashable: Any]?) -> Void) {
-        load(resource.url, httpMethod: httpMethod, body: body, headers: headers, withCompletion: completion)
+    func load(httpMethod: String, body: String, headers: [AnyHashable: Any]?, session: URLSession, attempt: Int, completion: @escaping ((Resource.Model?), Int?, ErrorResponse?, [AnyHashable: Any]?, Int) -> Void) {
+        load(resource.url, httpMethod: httpMethod, body: body, headers: headers, session: session, attempt: attempt, withCompletion: completion)
     }
 }
 
@@ -125,13 +166,11 @@ extension DataRequest: NetworkRequest {
 		return data
 	}
 	
-	func load(withCompletion completion: @escaping (Data?) -> Void) {
-		load(resource.url, withCompletion: completion)
+    func load(_ session: URLSession, withCompletion completion: @escaping (Data?) -> Void) {
+		load(resource.url, session: session, withCompletion: completion)
 	}
     
-    func load(httpMethod: String, body: String, headers: [AnyHashable: Any]?, completion: @escaping ((Data?), Int?, [AnyHashable: Any]?) -> Void) {
-        load(resource.url, httpMethod: httpMethod, body: body, headers: headers, withCompletion: completion)
+    func load(httpMethod: String, body: String, headers: [AnyHashable: Any]?, session: URLSession, attempt: Int, completion: @escaping ((Data?), Int?, ErrorResponse?, [AnyHashable: Any]?, Int) -> Void) {
+        load(resource.url, httpMethod: httpMethod, body: body, headers: headers, session: session, attempt: attempt, withCompletion: completion)
     }
 }
-
-

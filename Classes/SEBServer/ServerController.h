@@ -42,14 +42,16 @@ NS_ASSUME_NONNULL_BEGIN
 @protocol ServerControllerDelegate <NSObject>
 
 - (void) didSelectExamWithExamId:(NSString *)examId url:(NSString *)url;
-- (void) storeNewSEBSettings:(NSData *)configData;
+- (void) storeNewSEBSettingsFromServer:(NSData *)configData;
 - (void) loginToExam:(NSString *)url;
 - (void) didEstablishSEBServerConnection;
+- (void) didFailWithError:(NSError *)error fatal:(BOOL)fallback;
+- (void) closeServerViewAndRestart:(id)sender;
 - (void) serverSessionQuitRestart:(BOOL)restart;
-- (void) closeServerView:(id)sender;
 - (void) didCloseSEBServerConnectionRestart:(BOOL)restart;
 
 @optional
+- (void) closeServerViewWithCompletion:(void (^)(void))completion;
 - (void) startBatteryMonitoringWithDelegate:(id)delegate;
 - (void) startProctoringWithAttributes:(NSDictionary *)attributes;
 - (void) reconfigureWithAttributes:(NSDictionary *)attributes;
@@ -74,7 +76,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (strong) NSDictionary *sebServer;
 @property (strong, nonatomic) SEBServerController *sebServerController;
 
-- (BOOL) connectToServer:(NSURL *)url withConfiguration:(NSDictionary *)sebServerConfiguration;
+- (NSError *) connectToServer:(NSURL *)url withConfiguration:(NSDictionary *)sebServerConfiguration;
+- (BOOL) fallbackEnabled;
 - (void) startExamFromServer;
 - (void) loginToExam:(NSString * _Nonnull)url;
 - (void) examSelected:(NSString * _Nonnull)examId url:(NSString * _Nonnull)url;
