@@ -28,8 +28,9 @@ In addition, underneath the list of SEB configuration files found, there is a co
 
 Buttons:
 * Rescan: In case you delete some invalid SEB version, you can rescan and check if it is really gone.
-* Start SEB: SEB Verificator will start the valid SEB version you selected in the found applications list. If you selected a found SEB configuration file, SEB will open it.
+* Start SEB: SEB Verificator will start the valid SEB version you selected in the found applications list. If you selected a found SEB configuration file, SEB will open it. You can also just press the Enter/Return key to invoke this function.
 * Quit Apps & Start SEB: SEB Verificator will attempt to send a quit command to all applications currently running which use the activation policy 'regular', e.g. they have an icon in the macOS Dock and can be activated using the App Chooser (command - tab shortcut). If an app has an open document with unsaved changes and doesn't support auto save, it might ask you to first save the document before quitting. Apps like Google Chrome, which don't comply to Apple's Human Interface Guidelines might ask you to confirm quitting. After all apps are quit, the selected SEB version will be started (opening a selected SEB configuration file). You can also force quit applications in the window which SEB Verificator will display, but then you might loose unsaved changes. Note: This feature currently doesn't terminate background processes and helper apps, which aren't displayed in the Dock/App Chooser. After quitting SEB, you need to start apps which were quit by SEB Verificator manually, including the Finder (use for example the Dock or Spotlight). 
+* Checkmark "Start with config ...": If one or several SEB configuration files were found in the folder SEB Verificator was started from, the first one (alphabetically) will be selected when starting SEB Verificator. If you don't want to start SEB with that config, you can deselect this checkmark. If you select another config in the list, this checkmark will automatically be selected again.
 
 
 ## Using Safe Mode for More Security
