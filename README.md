@@ -37,10 +37,10 @@ Buttons:
 
 When an exam proctor/invigilator supervises the correct use of SEB Verificator to start SEB, there is another way how to increase security massively: [Reboot the Mac in safe mode](https://support.apple.com/guide/mac-help/start-up-your-mac-in-safe-mode-mh21245/mac). A macOS device owned and controlled by the candidate could have specific third-party tools installed, which run in the background and could potentially be used for cheating. Also a candidate might attempt to run SEB Verificator and SEB in a manipulated virtual machine (VM), attempting to bypass SEB's VM detector. Safe mode should prevent this if activated while being supervised by a proctor:
 * Shut the Mac down.
-* Start the mac in safe mode, see [Apple instructions how to do this on a Mac with Apple silicon or an Intel-based Mac](https://support.apple.com/guide/mac-help/start-up-your-mac-in-safe-mode-mh21245/mac).
-* In safe mode, macOS prevents some software, such as startup items, from loading. This also applies to VMs and software starting third-party background processes.
+* Start the mac in Safe mode, see [Apple instructions how to do this on a Mac with Apple silicon or an Intel-based Mac](https://support.apple.com/guide/mac-help/start-up-your-mac-in-safe-mode-mh21245/mac).
+* In Safe mode, macOS prevents some software, such as startup items, from loading. This also applies to VMs and software starting third-party background processes.
 * Start SEB using SEB Verificator. You could use SEB Server to monitor if a Mac would be rebooted during the exam.
-* After the exam, reboot the Mac, safe mode will be deactivated.
+* After the exam, reboot the Mac, Safe mode will be deactivated.
  
 
 ## Building
